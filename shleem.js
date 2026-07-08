@@ -79,7 +79,7 @@
         #cpt-widget-header h3 {
             margin: 0;
             font-size: 14px;
-            color: #00d4ff;
+            color: #FFFFFF;
         }
 
         #cpt-widget-status {
@@ -120,7 +120,7 @@
         .cpt-table th {
             text-align: left;
             padding: 4px 6px;
-            background: #16213e;
+            background: #C99DC7;
             color: #aaa;
             font-weight: normal;
             font-size: 11px;
