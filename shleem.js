@@ -50,7 +50,7 @@
             right: 10px;
             width: 420px;
             max-height: 500px;
-            background: #6CBA63;
+            background: #FFADDB;
             color: #000000;
             border-radius: 10px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
