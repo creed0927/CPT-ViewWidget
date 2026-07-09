@@ -5,6 +5,8 @@
 // @version      3.5
 // @description  Pulls staging/loading data from CPT View via hidden iframe — RAM optimized + critical alerts + synced state + scraper badge
 // @match        *://*/*
+// @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/main/CPT_ViewWidget.js
+// @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/main/CPT_ViewWidget.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_setValue
