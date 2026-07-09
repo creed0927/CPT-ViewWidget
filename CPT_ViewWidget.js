@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.0.1
 // @description  Pulls staging/loading data from CPT View — dual mode: scrapes on CPT View, displays widget elsewhere
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -24,13 +24,88 @@
     // ============================================
     const CFG = {
         url: 'https://trans-logistics.amazon.com/ssp/dock/hrz/cpt',
-        refresh: 10000,       // widget UI refresh rate
-        scrape: 15000,        // how often to scrape on CPT View page
+        refresh: 10000,
+        scrape: 15000,
         scale: 1.04,
         alertStagedThreshold: 130,
         alertMinutesThreshold: 20,
-        pageWait: 800         // ms between page flips during pagination
+        pageWait: 800
     };
+
+    // ============================================
+    // SHARED: TABLE PARSER (must be defined before either mode uses it)
+    // ============================================
+    function parseRows(rows) {
+        const staged = [], loading = [], loaded = [], allCpts = [];
+        const len = rows.length;
+
+        for (let i = 0; i < len; i++) {
+            const cells = rows[i].cells;
+            if (!cells || cells.length < 22) continue;
+
+            const lnSpan = cells[2].querySelector('span.laneName');
+            const ln = lnSpan ? lnSpan.textContent.trim() : cells[2].textContent.trim();
+            const dest = ln.includes('->') ? ln.split('->')[1].trim()
+                       : ln.includes('\u2192') ? ln.split('\u2192')[1].trim()
+                       : ln;
+
+            const tl = cells[1].textContent.trim();
+            const cpt = cells[0].textContent.trim();
+            const lip = extractNum(cells[4]);
+
+            const tot = extractCount(cells[8]);
+            const inf = extractCount(cells[12]);
+            const stP = extractCount(cells[18]);
+            const stC = extractCount(cells[19]);
+            const ldP = extractCount(cells[20]);
+            const ldC = extractCount(cells[21]);
+
+            allCpts.push({ lane: dest, cpt, timeLeft: tl, totalPkgs: tot, inFacilityPkgs: inf, stagedPkgs: stP, loadedPkgs: ldP, loadsInProgress: lip });
+
+            if (stP > 0 || stC > 0) staged.push({ lane: dest, pkgs: stP, containers: stC, cpt, timeLeft: tl });
+            if (lip > 0) loading.push({ lane: dest, loadedPkgs: ldP, totalPkgs: tot, cpt, timeLeft: tl });
+            if (ldP > 0 || ldC > 0) loaded.push({ lane: dest, pkgs: ldP, containers: ldC, cpt, timeLeft: tl });
+        }
+
+        return { staged, loading, loaded, allCpts, timestamp: Date.now() };
+    }
+
+    function extractCount(cell) {
+        if (!cell) return 0;
+        const a = cell.querySelector('a');
+        if (a) {
+            const n = parseInt(a.textContent.trim());
+            return isNaN(n) ? 0 : n;
+        }
+        const text = cell.textContent;
+        const match = text.match(/(\d+)/);
+        return match ? parseInt(match[1]) : 0;
+    }
+
+    function extractNum(cell) {
+        if (!cell) return 0;
+        const a = cell.querySelector('a');
+        if (a) return parseInt(a.textContent.trim()) || 0;
+        const text = cell.textContent.trim();
+        const n = parseInt(text);
+        return isNaN(n) ? 0 : n;
+    }
+
+    function tlMin(t) {
+        if (!t) return 99999;
+        const h = (t.match(/(\d+)\s*hr/) || [, 0])[1] | 0;
+        const m = (t.match(/(\d+)\s*min/) || [, 0])[1] | 0;
+        return h * 60 + m;
+    }
+
+    function isLate(t) {
+        if (!t) return false;
+        const s = t.toLowerCase();
+        if (s.includes('-') || s.includes('late') || s.includes('past')) return true;
+        return tlMin(t) <= 0;
+    }
+
+    function isUrg(t) { return tlMin(t) <= 120; }
 
     // ============================================
     // DETECT MODE
@@ -86,7 +161,6 @@
         badge.innerHTML = '<span class="dot"></span><span>widget syncing</span><span class="scrape-time" id="scrape-time"></span><span class="scrape-count" id="scrape-count"></span>';
         document.body.appendChild(badge);
 
-        // ---- ACTIVE SCRAPING LOGIC ----
         function scrapeTable() {
             const tbl = document.querySelector('#cptsLoadInProgress');
             if (!tbl) return;
@@ -95,7 +169,6 @@
             if (!rows.length) return;
             if (rows.length === 1 && rows[0].textContent.toLowerCase().includes('loading')) return;
 
-            // Try to get ALL rows via DataTables
             if (window.jQuery) {
                 try {
                     const dt = window.jQuery('#cptsLoadInProgress').DataTable();
@@ -105,10 +178,9 @@
                         scrapeAllPagesLocal(dt);
                         return;
                     }
-                } catch(e) { /* no DataTables API, just scrape visible */ }
+                } catch(e) {}
             }
 
-            // Single page or no DataTables — scrape visible
             finishLocalScrape(rows);
         }
 
@@ -132,7 +204,6 @@
                     if (pageNum + 1 < totalPages) {
                         scrapePage(pageNum + 1);
                     } else {
-                        // Return to original page
                         dt.page(originalPage).draw(false);
                         finishLocalScrape(collectedRows);
                     }
@@ -150,14 +221,13 @@
             const countEl = document.getElementById('scrape-count');
             if (timeEl) {
                 const now = new Date();
-                timeEl.textContent = '· ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                timeEl.textContent = '\xB7 ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             }
             if (countEl) {
-                countEl.textContent = `· ${data.allCpts.length} cpts`;
+                countEl.textContent = `\xB7 ${data.allCpts.length} cpts`;
             }
         }
 
-        // Wait for table to be populated, then start scraping loop
         function waitForData() {
             const tbl = document.querySelector('#cptsLoadInProgress');
             if (!tbl) { setTimeout(waitForData, 2000); return; }
@@ -168,15 +238,12 @@
                 return;
             }
 
-            // Data is loaded — scrape immediately then start loop
             scrapeTable();
             setInterval(scrapeTable, CFG.scrape);
         }
 
-        // Start after a short delay for page to settle
         setTimeout(waitForData, 3000);
-
-        return; // Don't run widget on CPT View
+        return;
     }
 
     // ============================================
@@ -185,9 +252,6 @@
 
     let popWin = null;
 
-    // ============================================
-    // STYLES
-    // ============================================
     const BASE_CSS = `
         .cw{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#000;background:#FFADDB}
         .cw-hd{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab}
@@ -237,9 +301,6 @@
         ${BASE_CSS}
     `);
 
-    // ============================================
-    // HTML TEMPLATE
-    // ============================================
     function buildHTML(isPopout) {
         return `
         <div class="cw-hd" id="cw-hd">
@@ -247,8 +308,8 @@
             <div>
                 <span class="cw-st" id="cw-st">waiting for data...</span>
                 ${isPopout
-                    ? '<button class="cw-btn" id="cw-dock" title="dock back">&#x29C9;</button>'
-                    : '<button class="cw-btn" id="cw-pop" title="pop out">&#x29C9;</button><button class="cw-btn" id="cw-min">&mdash;</button>'}
+                    ? '<button class="cw-btn" id="cw-dock" title="dock back">\u29C9</button>'
+                    : '<button class="cw-btn" id="cw-pop" title="pop out">\u29C9</button><button class="cw-btn" id="cw-min">\u2014</button>'}
             </div>
         </div>
         ${!isPopout ? `<div class="cw-mv" id="cw-mv">
@@ -258,7 +319,7 @@
                 <div class="cw-mi"><span class="mn s-ldd" id="md">-</span><span class="ml">loaded</span></div>
                 <div class="cw-mi"><span class="mn s-lat" id="mt">-</span><span class="ml">late</span></div>
             </div>
-            <div class="cw-mu" id="mu">&mdash;</div>
+            <div class="cw-mu" id="mu">\u2014</div>
             <div id="cw-mini-alert"></div>
         </div>` : ''}
         <div class="cw-bd" id="cw-bd">
@@ -293,15 +354,14 @@
         const w = document.getElementById('cpt-w');
         if (!w) return;
         const btn = w.querySelector('#cw-min');
-        if (isMin) { w.classList.add('min'); if (btn) btn.textContent = '▢'; }
-        else { w.classList.remove('min'); if (btn) btn.textContent = '—'; }
+        if (isMin) { w.classList.add('min'); if (btn) btn.textContent = '\u25A2'; }
+        else { w.classList.remove('min'); if (btn) btn.textContent = '\u2014'; }
     }
 
     GM_addValueChangeListener('cpt_widget_minimized', (name, oldVal, newVal, remote) => {
         if (remote) applyMinState(newVal);
     });
 
-    // Listen for new data from the CPT View tab's scraper
     GM_addValueChangeListener('cpt_widget_data', (name, oldVal, newVal, remote) => {
         if (remote) update();
     });
@@ -352,7 +412,7 @@
         const t = Math.round((screen.height - ph) / 2);
 
         popWin = window.open('', 'CPT_W', `width=${pw},height=${ph},top=${t},left=${l},resizable=no,scrollbars=no,menubar=no,toolbar=no,location=no,status=no`);
-        if (!popWin) { alert('Pop-up blocked! Allow pop-ups for this site.'); return; }
+        if (!popWin) { alert('Pop-up blocked!'); return; }
 
         popWin.document.write(`<!DOCTYPE html><html><head><title>outbound dock :3</title><style>
             *{box-sizing:border-box}html,body{margin:0;padding:0;overflow:hidden}
@@ -453,7 +513,6 @@
         d.getElementById('cd').textContent = loaded.length;
         d.getElementById('ct').textContent = late;
 
-        // Update minimized summary (only exists on inline widget)
         const ms = document.getElementById('ms');
         if (ms) {
             ms.textContent = staged.length;
@@ -477,7 +536,6 @@
         const mu = document.getElementById('mu');
         if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
 
-        // ---- Staged table ----
         const tbS = d.getElementById('tb-s');
         if (!staged.length) {
             tbS.innerHTML = '<tr><td colspan="4" style="color:#888">no freight staged</td></tr>';
@@ -490,7 +548,6 @@
             tbS.innerHTML = h;
         }
 
-        // ---- Loading table ----
         const tbL = d.getElementById('tb-l');
         if (!loading.length) {
             tbL.innerHTML = '<tr><td colspan="4" style="color:#888">no active loads</td></tr>';
@@ -503,7 +560,6 @@
             tbL.innerHTML = h;
         }
 
-        // ---- All CPTs table ----
         const tbA = d.getElementById('tb-a');
         if (!allCpts.length) {
             tbA.innerHTML = '<tr><td colspan="5" style="color:#888">no data</td></tr>';
@@ -523,7 +579,6 @@
         const src = d.getElementById('cw-src');
         if (src) src.textContent = 'source: cpt view tab';
 
-        // Resize pop-out to fit
         if (popWin && !popWin.closed) {
             const wEl = popWin.document.getElementById('cpt-w');
             if (wEl) {
@@ -535,7 +590,7 @@
     }
 
     // ============================================
-    // MAIN UPDATE LOOP
+    // MAIN LOOP
     // ============================================
     function update() {
         const raw = GM_getValue('cpt_widget_data', null);
@@ -558,111 +613,6 @@
 
     if (document.readyState === 'complete') init();
     else window.addEventListener('load', init);
-
-    return;
-    }
-
-    // ============================================
-    // SHARED: TABLE PARSER (used by both modes)
-    // ============================================
-    function parseRows(rows) {
-        const staged = [], loading = [], loaded = [], allCpts = [];
-        const len = rows.length;
-
-        for (let i = 0; i < len; i++) {
-            const cells = rows[i].cells;
-            if (!cells || cells.length < 22) continue;
-
-            // Column 2: Lane name
-            const lnSpan = cells[2].querySelector('span.laneName');
-            const ln = lnSpan ? lnSpan.textContent.trim() : cells[2].textContent.trim();
-            const dest = ln.includes('->') ? ln.split('->')[1].trim()
-                       : ln.includes('\u2192') ? ln.split('\u2192')[1].trim()
-                       : ln;
-
-            // Column 1: Time Left
-            const tl = cells[1].textContent.trim();
-
-            // Column 0: CPT
-            const cpt = cells[0].textContent.trim();
-
-            // Column 4: Loads in Progress
-            const lip = extractNum(cells[4]);
-
-            // Column 8: Total Packages
-            const tot = extractCount(cells[8]);
-
-            // Column 12: In Facility All Packages
-            const inf = extractCount(cells[12]);
-
-            // Column 18: Staged Packages
-            const stP = extractCount(cells[18]);
-
-            // Column 19: Staged Containers
-            const stC = extractCount(cells[19]);
-
-            // Column 20: Loaded Packages
-            const ldP = extractCount(cells[20]);
-
-            // Column 21: Loaded Containers
-            const ldC = extractCount(cells[21]);
-
-            allCpts.push({ lane: dest, cpt, timeLeft: tl, totalPkgs: tot, inFacilityPkgs: inf, stagedPkgs: stP, loadedPkgs: ldP, loadsInProgress: lip });
-
-            if (stP > 0 || stC > 0) staged.push({ lane: dest, pkgs: stP, containers: stC, cpt, timeLeft: tl });
-            if (lip > 0) loading.push({ lane: dest, loadedPkgs: ldP, totalPkgs: tot, cpt, timeLeft: tl });
-            if (ldP > 0 || ldC > 0) loaded.push({ lane: dest, pkgs: ldP, containers: ldC, cpt, timeLeft: tl });
-        }
-
-        return { staged, loading, loaded, allCpts, timestamp: Date.now() };
-    }
-
-    // Extract number from a cell — handles <a> tags and P:/C: prefix with &nbsp;
-    function extractCount(cell) {
-        if (!cell) return 0;
-
-        // First try: get <a> tag content (most data cells have this)
-        const a = cell.querySelector('a');
-        if (a) {
-            const n = parseInt(a.textContent.trim());
-            return isNaN(n) ? 0 : n;
-        }
-
-        // Second try: get any number from the text content
-        // textContent will have "P:\u00A00" or "C:\u00A00" (non-breaking space)
-        const text = cell.textContent;
-        const match = text.match(/(\d+)/);
-        return match ? parseInt(match[1]) : 0;
-    }
-
-    // Extract a plain number from a cell (like Loads in Progress)
-    function extractNum(cell) {
-        if (!cell) return 0;
-        const a = cell.querySelector('a');
-        if (a) return parseInt(a.textContent.trim()) || 0;
-        const text = cell.textContent.trim();
-        const n = parseInt(text);
-        return isNaN(n) ? 0 : n;
-    }
-
-    // ============================================
-    // HELPERS
-    // ============================================
-    function tlMin(t) {
-        if (!t) return 99999;
-        const h = (t.match(/(\d+)\s*hr/) || [, 0])[1] | 0;
-        const m = (t.match(/(\d+)\s*min/) || [, 0])[1] | 0;
-        return h * 60 + m;
-    }
-
-    function isLate(t) {
-        if (!t) return false;
-        const s = t.toLowerCase();
-        if (s.includes('-') || s.includes('late') || s.includes('past')) return true;
-        return tlMin(t) <= 0;
-    }
-
-    function isUrg(t) { return tlMin(t) <= 120; }
 
 })();
 
