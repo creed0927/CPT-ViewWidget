@@ -148,7 +148,7 @@
         }
 
         .cpt-summary-item {
-            background: #888c8c;
+            background: #FFFFFF;
             padding: 6px 12px;
             border-radius: 6px;
             text-align: center;
