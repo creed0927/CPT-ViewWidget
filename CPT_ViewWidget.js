@@ -2,7 +2,9 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      3.8.1
+// @version      3.8.2
+// @author       @reedchrb
+// @author       @henderhu
 // @description  Pulls staging/loading data from CPT View via hidden iframe — RAM optimized + critical alerts + synced state + scraper badge
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
