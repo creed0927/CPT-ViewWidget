@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      3.8.3
-// @description  Pulls staging/loading data from CPT View via hidden iframe — RAM optimized + critical alerts + synced state + scraper badge
+// @version      3.9
+// @description  Pulls staging/loading data from CPT View via hidden iframe — full pagination scrape
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -29,7 +29,8 @@
         iframeWait: 8000,
         scale: 1.04,
         alertStagedThreshold: 130,
-        alertMinutesThreshold: 20
+        alertMinutesThreshold: 20,
+        pageWait: 800  // ms to wait between page flips during pagination
     };
 
     // ============================================
@@ -92,9 +93,6 @@
             }
         });
 
-        // Don't show the full widget on CPT View — only the badge
-        // But we DO still want the iframe scraper logic below to NOT run here
-        // (the iframe approach scrapes from other pages, not from CPT View itself)
         return;
     }
 
@@ -128,7 +126,7 @@
         .cw-si .l{font-size:10px;color:#888;text-transform:lowercase}
         .cw-btn{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}
         .cw-btn:hover{color:#000}
-        .s-stg{color:#f39c12;font-weight:bold}
+        .s-stg{color:#f[MAC_ADDRESS];font-weight:bold}
         .s-ldg{color:#3498db;font-weight:bold}
         .s-ldd{color:#27ae60;font-weight:bold}
         .s-lat{color:#e74c3c;font-weight:bold}
@@ -316,7 +314,7 @@
     }
 
     // ============================================
-    // IFRAME SCRAPER — creates/destroys as needed to free RAM
+    // IFRAME SCRAPER — FULL PAGINATION SUPPORT
     // ============================================
     function startScrape() {
         if (iframe) { iframe.remove(); iframe = null; }
@@ -346,7 +344,8 @@
         if (!iframe) return;
         try {
             const doc = iframe.contentDocument || iframe.contentWindow.document;
-            if (!doc) throw new Error('cross-origin');
+            const iframeWin = iframe.contentWindow;
+            if (!doc || !iframeWin) throw new Error('cross-origin');
 
             const tbl = doc.querySelector('#cptsLoadInProgress');
             if (!tbl) { setTimeout(doScrape, 3000); return; }
@@ -357,18 +356,103 @@
                 return;
             }
 
-            const data = parseRows(rows);
-            GM_setValue('cpt_widget_data', JSON.stringify(data));
-            iframeDead = false;
+            // ---- STRATEGY 1: Use DataTables API to show all rows ----
+            if (iframeWin.jQuery) {
+                try {
+                    const dt = iframeWin.jQuery('#cptsLoadInProgress').DataTable();
+                    const info = dt.page.info();
 
-            destroyIframe();
-            scrapeT = setTimeout(startScrape, CFG.scrape);
+                    if (info.pages > 1) {
+                        // Attempt to show all rows at once
+                        dt.page.len(-1).draw(false);
+
+                        setTimeout(() => {
+                            const allRows = doc.querySelectorAll('#cptsLoadInProgress tbody tr');
+                            if (allRows.length > rows.length) {
+                                // show-all worked
+                                finishScrape(allRows);
+                            } else {
+                                // -1 didn't expand, reset and fall back to page looping
+                                dt.page.len(info.length).draw(false);
+                                setTimeout(() => scrapeAllPages(dt, doc), 500);
+                            }
+                        }, 2000);
+                        return;
+                    }
+                    // Only 1 page — scrape directly
+                } catch (e) {
+                    console.log('[CPT Widget] DataTables API failed, trying dropdown fallback');
+                }
+            }
+
+            // ---- STRATEGY 2: Change the page-length dropdown ----
+            const select = doc.querySelector('select[name="cptsLoadInProgress_length"]');
+            if (select) {
+                const allOption = [...select.options].find(o => o.value === '-1' || o.textContent.trim().toLowerCase() === 'all');
+                const maxOption = [...select.options].reduce((max, o) => {
+                    const v = parseInt(o.value);
+                    return (!isNaN(v) && v > parseInt(max.value)) ? o : max;
+                }, select.options[0]);
+
+                const targetOption = allOption || maxOption;
+                if (targetOption && select.value !== targetOption.value) {
+                    select.value = targetOption.value;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+                    setTimeout(() => {
+                        const allRows = doc.querySelectorAll('#cptsLoadInProgress tbody tr');
+                        finishScrape(allRows);
+                    }, 2000);
+                    return;
+                }
+            }
+
+            // ---- STRATEGY 3: Scrape visible rows (single page fallback) ----
+            finishScrape(rows);
 
         } catch (e) {
             iframeDead = true;
             destroyIframe();
             showFallback();
         }
+    }
+
+    // ---- Loop through all DataTable pages one by one ----
+    function scrapeAllPages(dt, doc) {
+        const info = dt.page.info();
+        const totalPages = info.pages;
+        const collectedRows = [];
+
+        function scrapePage(pageNum) {
+            dt.page(pageNum).draw(false);
+
+            setTimeout(() => {
+                const rows = doc.querySelectorAll('#cptsLoadInProgress tbody tr');
+                for (let i = 0; i < rows.length; i++) {
+                    if (rows[i].cells && rows[i].cells.length >= 22) {
+                        collectedRows.push(rows[i].cloneNode(true));
+                    }
+                }
+
+                if (pageNum + 1 < totalPages) {
+                    scrapePage(pageNum + 1);
+                } else {
+                    finishScrape(collectedRows);
+                }
+            }, CFG.pageWait);
+        }
+
+        scrapePage(0);
+    }
+
+    // ---- Final step: parse all collected rows and store ----
+    function finishScrape(rows) {
+        const data = parseRows(rows);
+        GM_setValue('cpt_widget_data', JSON.stringify(data));
+        iframeDead = false;
+        console.log(`[CPT Widget] Scraped ${data.allCpts.length} total CPTs across all pages.`);
+        destroyIframe();
+        scrapeT = setTimeout(startScrape, CFG.scrape);
     }
 
     function destroyIframe() {
@@ -396,7 +480,7 @@
 
         for (let i = 0; i < len; i++) {
             const cells = rows[i].cells;
-            if (cells.length < 22) continue;
+            if (!cells || cells.length < 22) continue;
 
             const lnSpan = cells[2].querySelector('span.laneName');
             const ln = lnSpan ? lnSpan.textContent.trim() : cells[2].textContent.trim();
@@ -596,7 +680,7 @@
         const raw = GM_getValue('cpt_widget_data', null);
         if (!raw) {
             const st = getDoc().getElementById('cw-st');
-            if (st) st.innerHTML = '<span style="color:#f39c12">● connecting...</span>';
+            if (st) st.innerHTML = '<span style="color:#f[MAC_ADDRESS]">● connecting...</span>';
             return;
         }
         try { render(JSON.parse(raw)); } catch (e) {}
