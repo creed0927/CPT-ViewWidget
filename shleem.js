@@ -4,8 +4,8 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  Pulls staging/loading data from CPT View and displays as a live widget
-// @match        *://yard-management.amazon.com/*
-// @match        *://*.yard-management.amazon.com/*
+// @match        *://*/*
+// @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/main/shleem.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/main/shleem.js
 // @grant        GM_xmlhttpRequest
