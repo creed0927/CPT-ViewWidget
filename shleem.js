@@ -105,7 +105,7 @@
             font-size: 12px;
             font-weight: bold;
             color: #000000;
-            text-transform: uppercase;
+            text-transform: lowercase;
             margin-bottom: 6px;
             border-bottom: 1px solid #FFFFFF;
             padding-bottom: 4px;
@@ -163,7 +163,7 @@
         .cpt-summary-item .label {
             font-size: 10px;
             color: #888;
-            text-transform: uppercase;
+            text-transform: lowercase;
         }
 
         .cpt-minimize-btn {
@@ -171,7 +171,7 @@
             border: none;
             color: #888;
             font-size: 16px;
-            cursor: pointer;
+            cursor: grab;
             padding: 0 5px;
         }
 
@@ -237,14 +237,14 @@
                 </div>
 
                 <div class="cpt-section">
-                    <div class="cpt-section-title">currently staged on Floor</div>
+                    <div class="cpt-section-title">currently staged on floor</div>
                     <table class="cpt-table">
                         <thead>
                             <tr>
-                                <th>Trailer</th>
-                                <th>Destination</th>
-                                <th>CPT</th>
-                                <th>Status</th>
+                                <th>trailer</th>
+                                <th>destination</th>
+                                <th>cpt</th>
+                                <th>status</th>
                             </tr>
                         </thead>
                         <tbody id="staged-table-body">
@@ -258,14 +258,14 @@
                     <table class="cpt-table">
                         <thead>
                             <tr>
-                                <th>Trailer</th>
-                                <th>Door</th>
-                                <th>Progress</th>
-                                <th>CPT</th>
+                                <th>trailer</th>
+                                <th>door</th>
+                                <th>progress</th>
+                                <th>cpt</th>
                             </tr>
                         </thead>
                         <tbody id="loading-table-body">
-                            <tr><td colspan="4">Loading...</td></tr>
+                            <tr><td colspan="4">loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
