@@ -67,13 +67,13 @@
         }
 
         #cpt-widget-header {
-            background: #16213e;
+            background: #D39ADB;
             padding: 10px 15px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            cursor: pointer;
-            border-bottom: 1px solid #0f3460;
+            cursor: grab;
+            border-bottom: 1px solid #D39ADB;
         }
 
         #cpt-widget-header h3 {
