@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.3
-// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data
+// @version      4.4
+// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data, shows containerized pkgs
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -33,8 +33,8 @@
         fetchTimeout: 15000,
         dataRefresh: 60000,
         pageReload: 300000,
-        snapMargin: 10,       // px from edge when snapped
-        snapThreshold: 80     // px — how close to edge before it snaps
+        snapMargin: 10,
+        snapThreshold: 80
     };
 
     // ============================================
@@ -60,15 +60,17 @@
 
             const tot = extractCount(cells[8]);
             const inf = extractCount(cells[12]);
-            const stP = extractCount(cells[18]);
-            const stC = extractCount(cells[19]);
-            const ldP = extractCount(cells[20]);
-            const ldC = extractCount(cells[21]);
+            const conP = extractCount(cells[16]); // Containerized Packages
+            const conC = extractCount(cells[17]); // Containerized Containers
+            const stP = extractCount(cells[18]);  // Staged Packages
+            const stC = extractCount(cells[19]);  // Staged Containers
+            const ldP = extractCount(cells[20]);  // Loaded Packages
+            const ldC = extractCount(cells[21]);  // Loaded Containers
 
-            allCpts.push({ lane: dest, cpt, timeLeft: tl, totalPkgs: tot, inFacilityPkgs: inf, stagedPkgs: stP, loadedPkgs: ldP, loadsInProgress: lip });
+            allCpts.push({ lane: dest, cpt, timeLeft: tl, totalPkgs: tot, inFacilityPkgs: inf, containerizedPkgs: conP, containerizedContainers: conC, stagedPkgs: stP, loadedPkgs: ldP, loadsInProgress: lip });
 
-            if (stP > 0 || stC > 0) staged.push({ lane: dest, pkgs: stP, containers: stC, cpt, timeLeft: tl });
-            if (lip > 0) loading.push({ lane: dest, loadedPkgs: ldP, totalPkgs: tot, cpt, timeLeft: tl });
+            if (stP > 0 || stC > 0) staged.push({ lane: dest, pkgs: stP, containers: stC, containerizedPkgs: conP, cpt, timeLeft: tl });
+            if (lip > 0) loading.push({ lane: dest, loadedPkgs: ldP, totalPkgs: tot, containerizedPkgs: conP, cpt, timeLeft: tl });
             if (ldP > 0 || ldC > 0) loaded.push({ lane: dest, pkgs: ldP, containers: ldC, cpt, timeLeft: tl });
         }
 
@@ -312,6 +314,7 @@
         .s-ldg{color:#3498db;font-weight:bold}
         .s-ldd{color:#27ae60;font-weight:bold}
         .s-lat{color:#e74c3c;font-weight:bold}
+        .s-con{color:#9b59b6;font-weight:bold}
         .cw-pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:cwp 2s infinite}
         @keyframes cwp{0%,100%{opacity:1}50%{opacity:.4}}
         .cw-warn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}
@@ -371,13 +374,13 @@
                 <div class="cw-si"><span class="n s-lat" id="ct">-</span><span class="l">late</span></div>
             </div>
             <div class="cw-sec"><div class="cw-sec-t">currently staged on floor</div>
-                <table><thead><tr><th>lane</th><th>pkgs</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-s"><tr><td colspan="4">fetching data...</td></tr></tbody></table>
+                <table><thead><tr><th>lane</th><th>pkgs</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-s"><tr><td colspan="5">fetching data...</td></tr></tbody></table>
             </div>
             <div class="cw-sec"><div class="cw-sec-t">loading into trucks</div>
-                <table><thead><tr><th>lane</th><th>loaded</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-l"><tr><td colspan="4">fetching data...</td></tr></tbody></table>
+                <table><thead><tr><th>lane</th><th>loaded</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-l"><tr><td colspan="5">fetching data...</td></tr></tbody></table>
             </div>
             <div class="cw-sec"><div class="cw-sec-t">all active cpts</div>
-                <table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-a"><tr><td colspan="5">fetching data...</td></tr></tbody></table>
+                <table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-a"><tr><td colspan="6">fetching data...</td></tr></tbody></table>
             </div>
             <div class="cw-src" id="cw-src"></div>
         </div>`;
@@ -397,17 +400,14 @@
             isDragging = true;
             hasMoved = false;
 
-            // Remove any snap transition
             widget.classList.remove('cw-snapping');
 
-            // Get current position
             const rect = widget.getBoundingClientRect();
             startX = e.clientX;
             startY = e.clientY;
             startLeft = rect.left;
             startTop = rect.top;
 
-            // Switch to top/left positioning for dragging
             widget.style.right = 'auto';
             widget.style.bottom = 'auto';
             widget.style.left = startLeft + 'px';
@@ -432,9 +432,8 @@
             if (!isDragging) return;
             isDragging = false;
 
-            if (!hasMoved) return; // was just a click, not a drag
+            if (!hasMoved) return;
 
-            // Snap to nearest corner
             snapToCorner(widget);
         });
     }
@@ -444,27 +443,21 @@
         const vw = window.innerWidth;
         const vh = window.innerHeight;
         const ww = rect.width;
-        const wh = rect.height;
         const m = CFG.snapMargin;
 
-        // Find center of widget
         const cx = rect.left + ww / 2;
-        const cy = rect.top + wh / 2;
+        const cy = rect.top + rect.height / 2;
 
-        // Determine which corner is closest
         const isRight = cx > vw / 2;
         const isBottom = cy > vh / 2;
 
-        // Add snap animation class
         widget.classList.add('cw-snapping');
 
-        // Clear all positioning
         widget.style.top = '';
         widget.style.bottom = '';
         widget.style.left = '';
         widget.style.right = '';
 
-        // Set transform-origin based on corner
         if (isBottom && isRight) {
             widget.style.bottom = m + 'px';
             widget.style.right = m + 'px';
@@ -483,11 +476,9 @@
             widget.style.transformOrigin = 'top left';
         }
 
-        // Save position
         const corner = (isBottom ? 'bottom' : 'top') + '-' + (isRight ? 'right' : 'left');
         GM_setValue('cpt_widget_corner', corner);
 
-        // Remove animation class after transition
         setTimeout(() => widget.classList.remove('cw-snapping'), 300);
     }
 
@@ -584,7 +575,7 @@
     // POP-OUT
     // ============================================
     function popOut() {
-        const pw = 440, ph = 550;
+        const pw = 460, ph = 550;
         const l = Math.round((screen.width - pw) / 2);
         const t = Math.round((screen.height - ph) / 2);
 
@@ -644,7 +635,6 @@
                         fetchMode = 'fetch';
                         fetchFailCount = 0;
                         GM_setValue('cpt_widget_data', JSON.stringify(parsed));
-                        console.log(`[CPT Widget] Fetched ${parsed.allCpts.length} CPTs via direct request`);
                     } else {
                         handleFetchEmpty();
                     }
@@ -681,7 +671,6 @@
 
             return parseRows(rows);
         } catch (e) {
-            console.log('[CPT Widget] Parse error:', e);
             return null;
         }
     }
@@ -812,39 +801,42 @@
         const mu = document.getElementById('mu');
         if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
 
+        // Staged table — now with containerized column
         const tbS = d.getElementById('tb-s');
         if (!staged.length) {
-            tbS.innerHTML = '<tr><td colspan="4" style="color:#888">no freight staged</td></tr>';
+            tbS.innerHTML = '<tr><td colspan="5" style="color:#888">no freight staged</td></tr>';
         } else {
             let h = '';
             for (let i = 0; i < staged.length; i++) {
                 const s = staged[i];
-                h += `<tr><td>${s.lane}</td><td>${s.pkgs}${s.containers > 0 ? ' (+' + s.containers + 'C)' : ''}</td><td>${s.cpt}</td><td class="${isUrg(s.timeLeft) ? 's-lat' : ''}">${s.timeLeft}</td></tr>`;
+                h += `<tr><td>${s.lane}</td><td>${s.pkgs}${s.containers > 0 ? ' (+' + s.containers + 'C)' : ''}</td><td class="s-con">${s.containerizedPkgs || 0}</td><td>${s.cpt}</td><td class="${isUrg(s.timeLeft) ? 's-lat' : ''}">${s.timeLeft}</td></tr>`;
             }
             tbS.innerHTML = h;
         }
 
+        // Loading table — now with containerized column
         const tbL = d.getElementById('tb-l');
         if (!loading.length) {
-            tbL.innerHTML = '<tr><td colspan="4" style="color:#888">no active loads</td></tr>';
+            tbL.innerHTML = '<tr><td colspan="5" style="color:#888">no active loads</td></tr>';
         } else {
             let h = '';
             for (let i = 0; i < loading.length; i++) {
                 const l = loading[i];
-                h += `<tr><td>${l.lane}</td><td>${l.loadedPkgs} / ${l.totalPkgs}</td><td>${l.cpt}</td><td class="${isUrg(l.timeLeft) ? 's-lat' : ''}">${l.timeLeft}</td></tr>`;
+                h += `<tr><td>${l.lane}</td><td>${l.loadedPkgs} / ${l.totalPkgs}</td><td class="s-con">${l.containerizedPkgs || 0}</td><td>${l.cpt}</td><td class="${isUrg(l.timeLeft) ? 's-lat' : ''}">${l.timeLeft}</td></tr>`;
             }
             tbL.innerHTML = h;
         }
 
+        // All CPTs table — now with containerized column
         const tbA = d.getElementById('tb-a');
         if (!allCpts.length) {
-            tbA.innerHTML = '<tr><td colspan="5" style="color:#888">no data</td></tr>';
+            tbA.innerHTML = '<tr><td colspan="6" style="color:#888">no data</td></tr>';
         } else {
             allCpts.sort((a, b) => tlMin(a.timeLeft) - tlMin(b.timeLeft));
             let h = '';
             for (let i = 0; i < allCpts.length; i++) {
                 const c = allCpts[i];
-                h += `<tr><td>${c.lane}</td><td>${c.totalPkgs}</td><td>${c.inFacilityPkgs}</td><td>${c.cpt}</td><td class="${isUrg(c.timeLeft) ? 's-lat' : ''}">${c.timeLeft}</td></tr>`;
+                h += `<tr><td>${c.lane}</td><td>${c.totalPkgs}</td><td>${c.inFacilityPkgs}</td><td class="s-con">${c.containerizedPkgs || 0}</td><td>${c.cpt}</td><td class="${isUrg(c.timeLeft) ? 's-lat' : ''}">${c.timeLeft}</td></tr>`;
             }
             tbA.innerHTML = h;
         }
@@ -860,7 +852,7 @@
             if (wEl) {
                 const ch = popWin.outerHeight - popWin.innerHeight;
                 const cw2 = popWin.outerWidth - popWin.innerWidth;
-                popWin.resizeTo(440 + cw2, wEl.scrollHeight + ch);
+                popWin.resizeTo(460 + cw2, wEl.scrollHeight + ch);
             }
         }
     }
