@@ -303,7 +303,7 @@
         });
 
         // Make draggable
-        makeDraggable(widget);
+        //makeDraggable(widget);
 
         // Restore minimized state
         if (GM_getValue('cpt_minimized', false)) {
