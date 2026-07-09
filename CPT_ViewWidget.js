@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.2
-// @description  Self-contained CPT widget — fetches data via GM_xmlhttpRequest, auto-refreshes CPT View data. No manual refresh needed.
+// @version      4.3
+// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -24,15 +24,17 @@
     // ============================================
     const CFG = {
         url: 'https://trans-logistics.amazon.com/ssp/dock/hrz/cpt',
-        refresh: 10000,       // widget UI refresh
-        scrape: 15000,        // scrape interval
+        refresh: 10000,
+        scrape: 15000,
         scale: 1.04,
         alertStagedThreshold: 130,
         alertMinutesThreshold: 20,
         pageWait: 800,
         fetchTimeout: 15000,
-        dataRefresh: 60000,   // how often to refresh CPT View data (ms) — DataTables reload
-        pageReload: 300000    // full page reload fallback (5 min)
+        dataRefresh: 60000,
+        pageReload: 300000,
+        snapMargin: 10,       // px from edge when snapped
+        snapThreshold: 80     // px — how close to edge before it snaps
     };
 
     // ============================================
@@ -116,7 +118,7 @@
     const IS_CPT_VIEW = window.location.href.includes('trans-logistics.amazon.com/ssp/dock');
 
     // ============================================
-    // MODE 1: ACTIVE SCRAPER on CPT View page (with auto-refresh)
+    // MODE 1: ACTIVE SCRAPER on CPT View page
     // ============================================
     if (IS_CPT_VIEW) {
 
@@ -164,51 +166,35 @@
         badge.innerHTML = '<span class="dot"></span><span>widget syncing</span><span class="scrape-time" id="scrape-time"></span><span class="scrape-count" id="scrape-count"></span>';
         document.body.appendChild(badge);
 
-        // ---- Auto-refresh the underlying data ----
-        let dtRefreshAvailable = false;
-
         function refreshTableData() {
-            // Strategy 1: DataTables AJAX reload (cleanest — no page flash)
             if (window.jQuery) {
                 try {
                     const dt = window.jQuery('#cptsLoadInProgress').DataTable();
                     if (dt.ajax && dt.ajax.url()) {
-                        dt.ajax.reload(null, false); // false = keep current page
-                        dtRefreshAvailable = true;
-                        console.log('[CPT Widget] DataTables AJAX reloaded');
+                        dt.ajax.reload(null, false);
                         return;
                     }
                 } catch(e) {}
             }
 
-            // Strategy 2: Find and click a refresh/search button on the page
             const refreshBtn = document.querySelector(
                 'button.refresh, button[title="Refresh"], .refreshBtn, ' +
                 'input[type="submit"][value="Search"], button.search-btn, ' +
                 '#searchButton, .btn-refresh, [data-action="refresh"]'
             );
-            if (refreshBtn) {
-                refreshBtn.click();
-                console.log('[CPT Widget] Clicked refresh button');
-                return;
-            }
+            if (refreshBtn) { refreshBtn.click(); return; }
 
-            // Strategy 3: If DataTables has a draw() method, force redraw
             if (window.jQuery) {
                 try {
                     const dt = window.jQuery('#cptsLoadInProgress').DataTable();
                     dt.draw(false);
-                    console.log('[CPT Widget] DataTables forced redraw');
                     return;
                 } catch(e) {}
             }
 
-            // Strategy 4: Full page reload as last resort
-            console.log('[CPT Widget] No refresh method found — full page reload');
             window.location.reload();
         }
 
-        // ---- Scraping logic ----
         function scrapeTable() {
             const tbl = document.querySelector('#cptsLoadInProgress');
             if (!tbl) return;
@@ -283,16 +269,11 @@
                 return;
             }
 
-            // Data is ready — do initial scrape
             scrapeTable();
-
-            // Set up recurring scrape
             setInterval(scrapeTable, CFG.scrape);
 
-            // Set up auto-refresh of the underlying data
             setInterval(() => {
                 refreshTableData();
-                // Wait for data to load after refresh, then scrape again
                 setTimeout(scrapeTable, 5000);
             }, CFG.dataRefresh);
         }
@@ -311,7 +292,7 @@
 
     const BASE_CSS = `
         .cw{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#000;background:#FFADDB}
-        .cw-hd{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab}
+        .cw-hd{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none}
         .cw-hd h3{margin:0;font-size:14px;color:#FFF}
         .cw-st{font-size:11px;color:#FFF}
         .cw-bd{padding:10px 15px;max-height:440px;overflow-y:auto}
@@ -348,10 +329,11 @@
         .cw-alert-detail{font-size:10px;opacity:.9}
         @keyframes cwflash{0%,100%{opacity:1}50%{opacity:.85}}
         .cw-mini-alert{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:cwflash 1s infinite}
+        .cw-snapping{transition:top .25s ease,left .25s ease,right .25s ease,bottom .25s ease !important}
     `;
 
     GM_addStyle(`
-        #cpt-w{position:fixed;bottom:10px;right:10px;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transition:all .3s ease;transform:scale(${CFG.scale});transform-origin:bottom right}
+        #cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale(${CFG.scale});transform-origin:bottom right}
         #cpt-w.min .cw-bd{display:none}
         #cpt-w.min .cw-mv{display:block}
         .cw-mv{display:none}
@@ -402,6 +384,147 @@
     }
 
     // ============================================
+    // DRAG + CORNER SNAP
+    // ============================================
+    function initDrag(widget) {
+        const header = widget.querySelector('#cw-hd');
+        let isDragging = false;
+        let startX, startY, startLeft, startTop;
+        let hasMoved = false;
+
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON') return;
+            isDragging = true;
+            hasMoved = false;
+
+            // Remove any snap transition
+            widget.classList.remove('cw-snapping');
+
+            // Get current position
+            const rect = widget.getBoundingClientRect();
+            startX = e.clientX;
+            startY = e.clientY;
+            startLeft = rect.left;
+            startTop = rect.top;
+
+            // Switch to top/left positioning for dragging
+            widget.style.right = 'auto';
+            widget.style.bottom = 'auto';
+            widget.style.left = startLeft + 'px';
+            widget.style.top = startTop + 'px';
+
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+
+            if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true;
+
+            widget.style.left = (startLeft + dx) + 'px';
+            widget.style.top = (startTop + dy) + 'px';
+        });
+
+        document.addEventListener('mouseup', (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+
+            if (!hasMoved) return; // was just a click, not a drag
+
+            // Snap to nearest corner
+            snapToCorner(widget);
+        });
+    }
+
+    function snapToCorner(widget) {
+        const rect = widget.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const ww = rect.width;
+        const wh = rect.height;
+        const m = CFG.snapMargin;
+
+        // Find center of widget
+        const cx = rect.left + ww / 2;
+        const cy = rect.top + wh / 2;
+
+        // Determine which corner is closest
+        const isRight = cx > vw / 2;
+        const isBottom = cy > vh / 2;
+
+        // Add snap animation class
+        widget.classList.add('cw-snapping');
+
+        // Clear all positioning
+        widget.style.top = '';
+        widget.style.bottom = '';
+        widget.style.left = '';
+        widget.style.right = '';
+
+        // Set transform-origin based on corner
+        if (isBottom && isRight) {
+            widget.style.bottom = m + 'px';
+            widget.style.right = m + 'px';
+            widget.style.transformOrigin = 'bottom right';
+        } else if (isBottom && !isRight) {
+            widget.style.bottom = m + 'px';
+            widget.style.left = m + 'px';
+            widget.style.transformOrigin = 'bottom left';
+        } else if (!isBottom && isRight) {
+            widget.style.top = m + 'px';
+            widget.style.right = m + 'px';
+            widget.style.transformOrigin = 'top right';
+        } else {
+            widget.style.top = m + 'px';
+            widget.style.left = m + 'px';
+            widget.style.transformOrigin = 'top left';
+        }
+
+        // Save position
+        const corner = (isBottom ? 'bottom' : 'top') + '-' + (isRight ? 'right' : 'left');
+        GM_setValue('cpt_widget_corner', corner);
+
+        // Remove animation class after transition
+        setTimeout(() => widget.classList.remove('cw-snapping'), 300);
+    }
+
+    function applyStoredPosition(widget) {
+        const corner = GM_getValue('cpt_widget_corner', 'bottom-right');
+        const m = CFG.snapMargin;
+
+        widget.style.top = '';
+        widget.style.bottom = '';
+        widget.style.left = '';
+        widget.style.right = '';
+
+        switch (corner) {
+            case 'bottom-right':
+                widget.style.bottom = m + 'px';
+                widget.style.right = m + 'px';
+                widget.style.transformOrigin = 'bottom right';
+                break;
+            case 'bottom-left':
+                widget.style.bottom = m + 'px';
+                widget.style.left = m + 'px';
+                widget.style.transformOrigin = 'bottom left';
+                break;
+            case 'top-right':
+                widget.style.top = m + 'px';
+                widget.style.right = m + 'px';
+                widget.style.transformOrigin = 'top right';
+                break;
+            case 'top-left':
+                widget.style.top = m + 'px';
+                widget.style.left = m + 'px';
+                widget.style.transformOrigin = 'top left';
+                break;
+        }
+    }
+
+    // ============================================
     // SYNCED MINIMIZE STATE
     // ============================================
     function setMinState(isMin) { GM_setValue('cpt_widget_minimized', isMin); }
@@ -432,17 +555,14 @@
         w.className = 'cw';
         w.innerHTML = buildHTML(false);
         document.body.appendChild(w);
+
+        applyStoredPosition(w);
         applyZoom();
         applyMinState(getMinState());
+        initDrag(w);
 
         w.querySelector('#cw-min').onclick = e => {
             e.stopPropagation();
-            const isMin = !w.classList.contains('min');
-            applyMinState(isMin);
-            setMinState(isMin);
-        };
-        w.querySelector('#cw-hd').onclick = e => {
-            if (e.target.tagName === 'BUTTON') return;
             const isMin = !w.classList.contains('min');
             applyMinState(isMin);
             setMinState(isMin);
@@ -504,7 +624,7 @@
     }
 
     // ============================================
-    // GM_XMLHTTPREQUEST FETCHER (self-contained)
+    // GM_XMLHTTPREQUEST FETCHER
     // ============================================
     function fetchCPTData() {
         GM_xmlhttpRequest({
@@ -568,11 +688,7 @@
 
     function handleFetchEmpty() {
         fetchFailCount++;
-        console.log(`[CPT Widget] Fetch returned empty table (attempt ${fetchFailCount})`);
-        if (fetchFailCount >= 3) {
-            fetchMode = 'tab';
-            showTabFallback();
-        }
+        if (fetchFailCount >= 3) { fetchMode = 'tab'; showTabFallback(); }
     }
 
     function handleFetchAuthError() {
@@ -583,11 +699,7 @@
 
     function handleFetchError(reason) {
         fetchFailCount++;
-        console.log(`[CPT Widget] Fetch error: ${reason} (attempt ${fetchFailCount})`);
-        if (fetchFailCount >= 3) {
-            fetchMode = 'tab';
-            showTabFallback();
-        }
+        if (fetchFailCount >= 3) { fetchMode = 'tab'; showTabFallback(); }
     }
 
     function showTabFallback() {
@@ -607,9 +719,7 @@
     }
 
     function scrapeLoop() {
-        if (fetchMode === 'fetch') {
-            fetchCPTData();
-        }
+        if (fetchMode === 'fetch') fetchCPTData();
     }
 
     // ============================================
