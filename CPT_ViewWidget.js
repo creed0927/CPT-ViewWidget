@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      3.8
+// @version      3.8.1
 // @description  Pulls staging/loading data from CPT View via hidden iframe — RAM optimized + critical alerts + synced state + scraper badge
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -35,7 +35,7 @@
     // ============================================
     // DETECT MODE: CPT View page or other page?
     // ============================================
-    const IS_CPT_VIEW = window.location.href.includes('trans-logistics.amazon.com/ssp/dock');
+    const IS_CPT_VIEW = window.location.href.includes('trans-logistics.amazon.com/ssp/dock/hrz/cpt');
 
     // ============================================
     // MODE 1: SCRAPER BADGE on CPT View page
