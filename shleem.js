@@ -84,7 +84,7 @@
 
         #cpt-widget-status {
             font-size: 11px;
-            color: #888;
+            color: #FFFFFF;
         }
 
         #cpt-widget-body {
@@ -107,7 +107,7 @@
             color: #000000;
             text-transform: uppercase;
             margin-bottom: 6px;
-            border-bottom: 1px solid #333;
+            border-bottom: 1px solid #FFFFFF;
             padding-bottom: 4px;
         }
 
@@ -121,18 +121,18 @@
             text-align: left;
             padding: 4px 6px;
             background: #C99DC7;
-            color: #aaa;
+            color: #FFFFFF;
             font-weight: normal;
             font-size: 11px;
         }
 
         .cpt-table td {
             padding: 4px 6px;
-            border-bottom: 1px solid #2a2a3e;
+            border-bottom: 1px solid #D9D9FF;
         }
 
         .cpt-table tr:hover {
-            background: #2a2a4e;
+            background: #D9D9FF;
         }
 
         .status-staged { color: #f39c12; font-weight: bold; }
