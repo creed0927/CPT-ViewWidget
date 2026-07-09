@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.0.1
-// @description  Pulls staging/loading data from CPT View — dual mode: scrapes on CPT View, displays widget elsewhere
+// @version      4.1
+// @description  Self-contained CPT widget — fetches data via GM_xmlhttpRequest, no CPT View tab needed. Falls back to tab-based scraping if needed.
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -24,16 +24,17 @@
     // ============================================
     const CFG = {
         url: 'https://trans-logistics.amazon.com/ssp/dock/hrz/cpt',
-        refresh: 10000,
-        scrape: 15000,
+        refresh: 10000,       // widget UI refresh
+        scrape: 15000,        // fetch interval
         scale: 1.04,
-        alertStagedThreshold: 130,
-        alertMinutesThreshold: 20,
-        pageWait: 800
+        alertStagedThreshold: 110,
+        alertMinutesThreshold: 30,
+        pageWait: 800,
+        fetchTimeout: 15000   // timeout for GM_xmlhttpRequest
     };
 
     // ============================================
-    // SHARED: TABLE PARSER (must be defined before either mode uses it)
+    // SHARED FUNCTIONS (defined first for both modes)
     // ============================================
     function parseRows(rows) {
         const staged = [], loading = [], loaded = [], allCpts = [];
@@ -113,7 +114,8 @@
     const IS_CPT_VIEW = window.location.href.includes('trans-logistics.amazon.com/ssp/dock');
 
     // ============================================
-    // MODE 1: ACTIVE SCRAPER on CPT View page
+    // MODE 1: SCRAPER BADGE on CPT View page
+    // (still useful as a visual indicator + local scrape backup)
     // ============================================
     if (IS_CPT_VIEW) {
 
@@ -161,7 +163,8 @@
         badge.innerHTML = '<span class="dot"></span><span>widget syncing</span><span class="scrape-time" id="scrape-time"></span><span class="scrape-count" id="scrape-count"></span>';
         document.body.appendChild(badge);
 
-        function scrapeTable() {
+        // Local scrape on CPT View (backup/supplement to fetch)
+        function scrapeTableLocal() {
             const tbl = document.querySelector('#cptsLoadInProgress');
             if (!tbl) return;
 
@@ -173,7 +176,6 @@
                 try {
                     const dt = window.jQuery('#cptsLoadInProgress').DataTable();
                     const info = dt.page.info();
-
                     if (info.pages > 1) {
                         scrapeAllPagesLocal(dt);
                         return;
@@ -192,7 +194,6 @@
 
             function scrapePage(pageNum) {
                 dt.page(pageNum).draw(false);
-
                 setTimeout(() => {
                     const rows = document.querySelectorAll('#cptsLoadInProgress tbody tr');
                     for (let i = 0; i < rows.length; i++) {
@@ -200,7 +201,6 @@
                             collectedRows.push(rows[i].cloneNode(true));
                         }
                     }
-
                     if (pageNum + 1 < totalPages) {
                         scrapePage(pageNum + 1);
                     } else {
@@ -238,8 +238,8 @@
                 return;
             }
 
-            scrapeTable();
-            setInterval(scrapeTable, CFG.scrape);
+            scrapeTableLocal();
+            setInterval(scrapeTableLocal, CFG.scrape);
         }
 
         setTimeout(waitForData, 3000);
@@ -247,10 +247,12 @@
     }
 
     // ============================================
-    // MODE 2: WIDGET on any other page
+    // MODE 2: WIDGET + SELF-CONTAINED FETCHER
     // ============================================
 
     let popWin = null;
+    let fetchMode = 'fetch'; // 'fetch' or 'tab'
+    let fetchFailCount = 0;
 
     const BASE_CSS = `
         .cw{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#000;background:#FFADDB}
@@ -306,7 +308,7 @@
         <div class="cw-hd" id="cw-hd">
             <h3>outbound dock :3 - live</h3>
             <div>
-                <span class="cw-st" id="cw-st">waiting for data...</span>
+                <span class="cw-st" id="cw-st">starting up...</span>
                 ${isPopout
                     ? '<button class="cw-btn" id="cw-dock" title="dock back">\u29C9</button>'
                     : '<button class="cw-btn" id="cw-pop" title="pop out">\u29C9</button><button class="cw-btn" id="cw-min">\u2014</button>'}
@@ -332,13 +334,13 @@
                 <div class="cw-si"><span class="n s-lat" id="ct">-</span><span class="l">late</span></div>
             </div>
             <div class="cw-sec"><div class="cw-sec-t">currently staged on floor</div>
-                <table><thead><tr><th>lane</th><th>pkgs</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-s"><tr><td colspan="4">open cpt view to start syncing...</td></tr></tbody></table>
+                <table><thead><tr><th>lane</th><th>pkgs</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-s"><tr><td colspan="4">fetching data...</td></tr></tbody></table>
             </div>
             <div class="cw-sec"><div class="cw-sec-t">loading into trucks</div>
-                <table><thead><tr><th>lane</th><th>loaded</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-l"><tr><td colspan="4">open cpt view to start syncing...</td></tr></tbody></table>
+                <table><thead><tr><th>lane</th><th>loaded</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-l"><tr><td colspan="4">fetching data...</td></tr></tbody></table>
             </div>
             <div class="cw-sec"><div class="cw-sec-t">all active cpts</div>
-                <table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-a"><tr><td colspan="5">open cpt view to start syncing...</td></tr></tbody></table>
+                <table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-a"><tr><td colspan="5">fetching data...</td></tr></tbody></table>
             </div>
             <div class="cw-src" id="cw-src"></div>
         </div>`;
@@ -447,6 +449,133 @@
     }
 
     // ============================================
+    // GM_XMLHTTPREQUEST FETCHER (self-contained, no tab needed)
+    // ============================================
+    function fetchCPTData() {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: CFG.url,
+            timeout: CFG.fetchTimeout,
+            headers: {
+                'Accept': 'text/html,application/xhtml+xml',
+                'Cache-Control': 'no-cache'
+            },
+            onload: function(response) {
+                if (response.status === 200) {
+                    const html = response.responseText;
+                    const parsed = parseHTMLResponse(html);
+
+                    if (parsed && parsed.allCpts.length > 0) {
+                        // Success! Data was in the HTML
+                        fetchMode = 'fetch';
+                        fetchFailCount = 0;
+                        GM_setValue('cpt_widget_data', JSON.stringify(parsed));
+                        console.log(`[CPT Widget] Fetched ${parsed.allCpts.length} CPTs via direct request`);
+                    } else {
+                        // HTML came back but no data rows — page loads data via JS
+                        handleFetchEmpty();
+                    }
+                } else if (response.status === 401 || response.status === 403) {
+                    // Auth failed — need to be logged in
+                    handleFetchAuthError();
+                } else {
+                    handleFetchError(response.status);
+                }
+            },
+            onerror: function() {
+                handleFetchError('network');
+            },
+            ontimeout: function() {
+                handleFetchError('timeout');
+            }
+        });
+    }
+
+    function parseHTMLResponse(html) {
+        try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            const tbl = doc.querySelector('#cptsLoadInProgress');
+            if (!tbl) return null;
+
+            const rows = tbl.querySelectorAll('tbody tr');
+            if (!rows.length) return null;
+
+            // Check if table is actually populated (not just "Loading...")
+            if (rows.length === 1) {
+                const text = rows[0].textContent.toLowerCase();
+                if (text.includes('loading') || text.includes('no data') || text.trim() === '') {
+                    return null;
+                }
+            }
+
+            // Check first row has enough cells (real data)
+            if (rows[0].cells && rows[0].cells.length < 22) return null;
+
+            return parseRows(rows);
+        } catch (e) {
+            console.log('[CPT Widget] Parse error:', e);
+            return null;
+        }
+    }
+
+    function handleFetchEmpty() {
+        fetchFailCount++;
+        console.log(`[CPT Widget] Fetch returned empty table (attempt ${fetchFailCount}). Data may load via JS.`);
+
+        if (fetchFailCount >= 3) {
+            // After 3 empty responses, switch to tab-based fallback
+            fetchMode = 'tab';
+            showTabFallback();
+        }
+    }
+
+    function handleFetchAuthError() {
+        fetchFailCount++;
+        fetchMode = 'tab';
+        console.log('[CPT Widget] Auth error — need active Amazon session');
+        showAuthFallback();
+    }
+
+    function handleFetchError(reason) {
+        fetchFailCount++;
+        console.log(`[CPT Widget] Fetch error: ${reason} (attempt ${fetchFailCount})`);
+
+        if (fetchFailCount >= 3) {
+            fetchMode = 'tab';
+            showTabFallback();
+        }
+    }
+
+    function showTabFallback() {
+        const d = getDoc();
+        const warn = d.getElementById('cw-warn');
+        if (warn) {
+            warn.innerHTML = `<div class="cw-warn">\u26A0\uFE0F direct fetch unavailable \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> in any tab to sync</div>`;
+        }
+    }
+
+    function showAuthFallback() {
+        const d = getDoc();
+        const warn = d.getElementById('cw-warn');
+        if (warn) {
+            warn.innerHTML = `<div class="cw-warn">\u26A0\uFE0F session expired \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> to re-authenticate, then it will auto-sync</div>`;
+        }
+    }
+
+    // ============================================
+    // SCRAPE LOOP (tries fetch first, falls back to tab data)
+    // ============================================
+    function scrapeLoop() {
+        if (fetchMode === 'fetch') {
+            fetchCPTData();
+        }
+        // If in 'tab' mode, we rely on GM_addValueChangeListener
+        // from the CPT View tab writing data
+    }
+
+    // ============================================
     // CRITICAL ALERT
     // ============================================
     function getCriticalAlerts(data) {
@@ -525,9 +654,9 @@
         renderAlerts(alerts, d);
 
         const warn = d.getElementById('cw-warn');
-        if (warn) {
+        if (warn && fetchMode === 'fetch') {
             const age = Math.floor((Date.now() - timestamp) / 60000);
-            warn.innerHTML = age > 2 ? `<div class="cw-warn">\u26A0\uFE0F data is ${age} min old \u2014 is CPT View still open?</div>` : '';
+            warn.innerHTML = age > 2 ? `<div class="cw-warn">\u26A0\uFE0F data is ${age} min old</div>` : '';
         }
 
         const now = new Date();
@@ -536,6 +665,7 @@
         const mu = document.getElementById('mu');
         if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
 
+        // Staged table
         const tbS = d.getElementById('tb-s');
         if (!staged.length) {
             tbS.innerHTML = '<tr><td colspan="4" style="color:#888">no freight staged</td></tr>';
@@ -548,6 +678,7 @@
             tbS.innerHTML = h;
         }
 
+        // Loading table
         const tbL = d.getElementById('tb-l');
         if (!loading.length) {
             tbL.innerHTML = '<tr><td colspan="4" style="color:#888">no active loads</td></tr>';
@@ -560,6 +691,7 @@
             tbL.innerHTML = h;
         }
 
+        // All CPTs table
         const tbA = d.getElementById('tb-a');
         if (!allCpts.length) {
             tbA.innerHTML = '<tr><td colspan="5" style="color:#888">no data</td></tr>';
@@ -577,7 +709,7 @@
         if (st) st.innerHTML = `<span class="cw-pulse"></span>${ts}`;
 
         const src = d.getElementById('cw-src');
-        if (src) src.textContent = 'source: cpt view tab';
+        if (src) src.textContent = fetchMode === 'fetch' ? 'source: direct fetch' : 'source: cpt view tab';
 
         if (popWin && !popWin.closed) {
             const wEl = popWin.document.getElementById('cpt-w');
@@ -596,7 +728,7 @@
         const raw = GM_getValue('cpt_widget_data', null);
         if (!raw) {
             const st = getDoc().getElementById('cw-st');
-            if (st) st.innerHTML = '<span style="color:#f39c12">\u25CF open CPT View to sync</span>';
+            if (st) st.innerHTML = '<span style="color:#f39c12">\u25CF fetching...</span>';
             return;
         }
         try { render(JSON.parse(raw)); } catch (e) {}
@@ -608,6 +740,14 @@
     function init() {
         createWidget();
         update();
+
+        // Start fetching immediately
+        fetchCPTData();
+
+        // Continue fetching on interval
+        setInterval(scrapeLoop, CFG.scrape);
+
+        // Also refresh UI on interval (for time-based warnings)
         setInterval(update, CFG.refresh);
     }
 
