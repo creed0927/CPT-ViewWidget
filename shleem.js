@@ -51,7 +51,7 @@
             width: 420px;
             max-height: 500px;
             background: #6CBA63;
-            color: #eaeaea;
+            color: #000000;
             border-radius: 10px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
             font-family: 'Segoe UI', Arial, sans-serif;
@@ -104,7 +104,7 @@
         .cpt-section-title {
             font-size: 12px;
             font-weight: bold;
-            color: #00d4ff;
+            color: #000000;
             text-transform: uppercase;
             margin-bottom: 6px;
             border-bottom: 1px solid #333;
@@ -210,7 +210,7 @@
         widget.id = 'cpt-widget';
         widget.innerHTML = `
             <div id="cpt-widget-header">
-                <h3> outbound dock :3 - Live</h3>
+                <h3> outbound dock :3 - live </h3>
                 <div>
                     <span id="cpt-widget-status">loading!!!</span>
                     <button class="cpt-minimize-btn" id="cpt-minimize">—</button>
@@ -220,24 +220,24 @@
                 <div class="cpt-summary-bar" id="cpt-summary">
                     <div class="cpt-summary-item">
                         <span class="number" id="count-staged">-</span>
-                        <span class="label">Staged</span>
+                        <span class="label">staged</span>
                     </div>
                     <div class="cpt-summary-item">
                         <span class="number" id="count-loading">-</span>
-                        <span class="label">Loading</span>
+                        <span class="label">loading</span>
                     </div>
                     <div class="cpt-summary-item">
                         <span class="number" id="count-loaded">-</span>
-                        <span class="label">Loaded</span>
+                        <span class="label">loaded</span>
                     </div>
                     <div class="cpt-summary-item">
                         <span class="number" id="count-late" style="color: #e74c3c;">-</span>
-                        <span class="label">Late</span>
+                        <span class="label">late</span>
                     </div>
                 </div>
 
                 <div class="cpt-section">
-                    <div class="cpt-section-title">Currently Staged on Floor</div>
+                    <div class="cpt-section-title">currently staged on Floor</div>
                     <table class="cpt-table">
                         <thead>
                             <tr>
@@ -248,13 +248,13 @@
                             </tr>
                         </thead>
                         <tbody id="staged-table-body">
-                            <tr><td colspan="4">Loading...</td></tr>
+                            <tr><td colspan="4">loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
 
                 <div class="cpt-section">
-                    <div class="cpt-section-title">Loading into Trucks</div>
+                    <div class="cpt-section-title">loading into trucks</div>
                     <table class="cpt-table">
                         <thead>
                             <tr>
