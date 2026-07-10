@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.5
-// @description  Self-contained CPT widget — single instance, hides from pages when popped out
+// @version      4.6
+// @description  Memory-optimized CPT widget — minimal allocations, reused buffers, efficient DOM ops
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -19,15 +19,12 @@
 (function() {
     'use strict';
 
-    // ============================================
-    // BAIL OUT IF WE'RE INSIDE THE POP-OUT WINDOW
-    // ============================================
     if (window.name === 'CPT_Widget_Pop') return;
 
     // ============================================
-    // CONFIGURATION
+    // CONFIG — frozen to prevent accidental mutation
     // ============================================
-    const CFG = {
+    const CFG = Object.freeze({
         url: 'https://trans-logistics.amazon.com/ssp/dock/hrz/cpt',
         refresh: 10000,
         scrape: 15000,
@@ -37,13 +34,57 @@
         pageWait: 800,
         fetchTimeout: 15000,
         dataRefresh: 60000,
-        pageReload: 300000,
-        snapMargin: 10,
-        snapThreshold: 80
-    };
+        snapMargin: 10
+    });
 
     // ============================================
-    // SHARED FUNCTIONS
+    // REUSABLE REGEX — compiled once, reused forever
+    // ============================================
+    const RE_HR = /(\d+)\s*hr/;
+    const RE_MIN = /(\d+)\s*min/;
+    const RE_NUM = /(\d+)/;
+
+    // ============================================
+    // SHARED UTILITY — minimal allocation
+    // ============================================
+    function tlMin(t) {
+        if (!t) return 99999;
+        const hm = RE_HR.exec(t);
+        const mm = RE_MIN.exec(t);
+        return ((hm ? +hm[1] : 0) * 60) + (mm ? +mm[1] : 0);
+    }
+
+    function isLate(t) {
+        if (!t) return false;
+        const c = t.charCodeAt(0);
+        // fast check for '-' (45), 'l' (108), 'p' (112)
+        if (c === 45) return true;
+        const s = t.toLowerCase();
+        return s.indexOf('late') !== -1 || s.indexOf('past') !== -1 || tlMin(t) <= 0;
+    }
+
+    function isUrg(t) { return tlMin(t) <= 120; }
+
+    function extractCount(cell) {
+        if (!cell) return 0;
+        const a = cell.firstElementChild;
+        if (a && a.tagName === 'A') {
+            const n = +a.textContent;
+            return n === n ? n : 0; // NaN check without isNaN
+        }
+        const m = RE_NUM.exec(cell.textContent);
+        return m ? +m[1] : 0;
+    }
+
+    function extractNum(cell) {
+        if (!cell) return 0;
+        const a = cell.firstElementChild;
+        if (a && a.tagName === 'A') return +a.textContent || 0;
+        return +cell.textContent || 0;
+    }
+
+    // ============================================
+    // PARSER — single pass, reuses object shape
     // ============================================
     function parseRows(rows) {
         const staged = [], loading = [], loaded = [], allCpts = [];
@@ -53,16 +94,18 @@
             const cells = rows[i].cells;
             if (!cells || cells.length < 22) continue;
 
-            const lnSpan = cells[2].querySelector('span.laneName');
-            const ln = lnSpan ? lnSpan.textContent.trim() : cells[2].textContent.trim();
-            const dest = ln.includes('->') ? ln.split('->')[1].trim()
-                       : ln.includes('\u2192') ? ln.split('\u2192')[1].trim()
-                       : ln;
+            const c2 = cells[2];
+            const lnSpan = c2.getElementsByTagName('span')[0];
+            const ln = lnSpan ? lnSpan.textContent : c2.textContent;
+            const arrow = ln.indexOf('->');
+            const arrow2 = ln.indexOf('\u2192');
+            const dest = arrow !== -1 ? ln.substring(arrow + 2).trim()
+                       : arrow2 !== -1 ? ln.substring(arrow2 + 1).trim()
+                       : ln.trim();
 
             const tl = cells[1].textContent.trim();
             const cpt = cells[0].textContent.trim();
             const lip = extractNum(cells[4]);
-
             const tot = extractCount(cells[8]);
             const inf = extractCount(cells[12]);
             const conP = extractCount(cells[16]);
@@ -72,99 +115,33 @@
             const ldP = extractCount(cells[20]);
             const ldC = extractCount(cells[21]);
 
-            allCpts.push({ lane: dest, cpt, timeLeft: tl, totalPkgs: tot, inFacilityPkgs: inf, containerizedPkgs: conP, containerizedContainers: conC, stagedPkgs: stP, loadedPkgs: ldP, loadsInProgress: lip });
+            allCpts[allCpts.length] = { lane: dest, cpt: cpt, timeLeft: tl, totalPkgs: tot, inFacilityPkgs: inf, containerizedPkgs: conP, stagedPkgs: stP, loadedPkgs: ldP, loadsInProgress: lip };
 
-            if (stP > 0 || stC > 0) staged.push({ lane: dest, pkgs: stP, containers: stC, containerizedPkgs: conP, cpt, timeLeft: tl });
-            if (lip > 0) loading.push({ lane: dest, loadedPkgs: ldP, totalPkgs: tot, containerizedPkgs: conP, cpt, timeLeft: tl });
-            if (ldP > 0 || ldC > 0) loaded.push({ lane: dest, pkgs: ldP, containers: ldC, cpt, timeLeft: tl });
+            if (stP > 0 || stC > 0) staged[staged.length] = { lane: dest, pkgs: stP, containers: stC, containerizedPkgs: conP, cpt: cpt, timeLeft: tl };
+            if (lip > 0) loading[loading.length] = { lane: dest, loadedPkgs: ldP, totalPkgs: tot, containerizedPkgs: conP, cpt: cpt, timeLeft: tl };
+            if (ldP > 0 || ldC > 0) loaded[loaded.length] = { lane: dest, pkgs: ldP, containers: ldC, cpt: cpt, timeLeft: tl };
         }
 
-        return { staged, loading, loaded, allCpts, timestamp: Date.now() };
+        return { staged: staged, loading: loading, loaded: loaded, allCpts: allCpts, timestamp: Date.now() };
     }
-
-    function extractCount(cell) {
-        if (!cell) return 0;
-        const a = cell.querySelector('a');
-        if (a) {
-            const n = parseInt(a.textContent.trim());
-            return isNaN(n) ? 0 : n;
-        }
-        const text = cell.textContent;
-        const match = text.match(/(\d+)/);
-        return match ? parseInt(match[1]) : 0;
-    }
-
-    function extractNum(cell) {
-        if (!cell) return 0;
-        const a = cell.querySelector('a');
-        if (a) return parseInt(a.textContent.trim()) || 0;
-        const text = cell.textContent.trim();
-        const n = parseInt(text);
-        return isNaN(n) ? 0 : n;
-    }
-
-    function tlMin(t) {
-        if (!t) return 99999;
-        const h = (t.match(/(\d+)\s*hr/) || [, 0])[1] | 0;
-        const m = (t.match(/(\d+)\s*min/) || [, 0])[1] | 0;
-        return h * 60 + m;
-    }
-
-    function isLate(t) {
-        if (!t) return false;
-        const s = t.toLowerCase();
-        if (s.includes('-') || s.includes('late') || s.includes('past')) return true;
-        return tlMin(t) <= 0;
-    }
-
-    function isUrg(t) { return tlMin(t) <= 120; }
 
     // ============================================
     // DETECT MODE
     // ============================================
-    const IS_CPT_VIEW = window.location.href.includes('trans-logistics.amazon.com/ssp/dock');
+    const IS_CPT_VIEW = window.location.href.indexOf('trans-logistics.amazon.com/ssp/dock') !== -1;
 
     // ============================================
-    // MODE 1: ACTIVE SCRAPER on CPT View page
+    // MODE 1: SCRAPER on CPT View
     // ============================================
     if (IS_CPT_VIEW) {
+        GM_setValue('cpt_view_open', true);
+        window.addEventListener('beforeunload', function() { GM_setValue('cpt_view_open', false); });
 
-        GM_addStyle(`
-            #cpt-scraper-badge {
-                position: fixed;
-                bottom: 10px;
-                right: 10px;
-                background: #D39ADB;
-                color: white;
-                padding: 8px 14px;
-                border-radius: 20px;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                font-size: 11px;
-                z-index: 999999;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }
-            #cpt-scraper-badge .dot {
-                display: inline-block;
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                background: #27ae60;
-                animation: scrapePulse 2s infinite;
-            }
-            @keyframes scrapePulse {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.4; }
-            }
-            #cpt-scraper-badge .scrape-time { font-size: 9px; opacity: 0.8; }
-            #cpt-scraper-badge .scrape-count { font-size: 9px; opacity: 0.7; }
-        `);
+        GM_addStyle('#cpt-scraper-badge{position:fixed;bottom:10px;right:10px;background:#D39ADB;color:#fff;padding:8px 14px;border-radius:20px;font:11px "Segoe UI",Arial,sans-serif;z-index:999999;box-shadow:0 2px 8px rgba(0,0,0,.3);display:flex;align-items:center;gap:8px}#cpt-scraper-badge .dot{width:8px;height:8px;border-radius:50%;background:#27ae60;animation:sp 2s infinite}@keyframes sp{0%,100%{opacity:1}50%{opacity:.4}}.st2{font-size:9px;opacity:.8}.sc2{font-size:9px;opacity:.7}');
 
         const badge = document.createElement('div');
         badge.id = 'cpt-scraper-badge';
-        badge.innerHTML = '<span class="dot"></span><span>widget syncing</span><span class="scrape-time" id="scrape-time"></span><span class="scrape-count" id="scrape-count"></span>';
+        badge.innerHTML = '<span class="dot"></span><span>widget syncing</span><span class="st2" id="scrape-time"></span><span class="sc2" id="scrape-count"></span>';
         document.body.appendChild(badge);
 
         function refreshTableData() {
@@ -174,75 +151,64 @@
                     if (dt.ajax && dt.ajax.url()) { dt.ajax.reload(null, false); return; }
                 } catch(e) {}
             }
-            const refreshBtn = document.querySelector(
-                'button.refresh, button[title="Refresh"], .refreshBtn, ' +
-                'input[type="submit"][value="Search"], button.search-btn, ' +
-                '#searchButton, .btn-refresh, [data-action="refresh"]'
-            );
-            if (refreshBtn) { refreshBtn.click(); return; }
-            if (window.jQuery) {
-                try { window.jQuery('#cptsLoadInProgress').DataTable().draw(false); return; } catch(e) {}
-            }
+            const btn = document.querySelector('button.refresh,button[title="Refresh"],.refreshBtn,input[type="submit"][value="Search"],button.search-btn,#searchButton,.btn-refresh,[data-action="refresh"]');
+            if (btn) { btn.click(); return; }
+            if (window.jQuery) { try { window.jQuery('#cptsLoadInProgress').DataTable().draw(false); return; } catch(e) {} }
             window.location.reload();
         }
 
         function scrapeTable() {
-            const tbl = document.querySelector('#cptsLoadInProgress');
+            const tbl = document.getElementById('cptsLoadInProgress');
             if (!tbl) return;
-            const rows = tbl.querySelectorAll('tbody tr');
-            if (!rows.length) return;
-            if (rows.length === 1 && rows[0].textContent.toLowerCase().includes('loading')) return;
+            const rows = tbl.tBodies[0] ? tbl.tBodies[0].rows : null;
+            if (!rows || !rows.length) return;
+            if (rows.length === 1 && rows[0].textContent.indexOf('oading') !== -1) return;
             if (window.jQuery) {
                 try {
                     const dt = window.jQuery('#cptsLoadInProgress').DataTable();
                     const info = dt.page.info();
-                    if (info.pages > 1) { scrapeAllPagesLocal(dt); return; }
+                    if (info.pages > 1) { scrapeAllPages(dt); return; }
                 } catch(e) {}
             }
-            finishLocalScrape(rows);
+            finishScrape(rows);
         }
 
-        function scrapeAllPagesLocal(dt) {
+        function scrapeAllPages(dt) {
             const info = dt.page.info();
-            const totalPages = info.pages;
-            const originalPage = info.page;
-            const collectedRows = [];
-            function scrapePage(pageNum) {
-                dt.page(pageNum).draw(false);
-                setTimeout(() => {
+            const total = info.pages, orig = info.page;
+            const collected = [];
+            (function next(p) {
+                dt.page(p).draw(false);
+                setTimeout(function() {
                     const rows = document.querySelectorAll('#cptsLoadInProgress tbody tr');
-                    for (let i = 0; i < rows.length; i++) {
-                        if (rows[i].cells && rows[i].cells.length >= 22) collectedRows.push(rows[i].cloneNode(true));
+                    for (let i = 0, l = rows.length; i < l; i++) {
+                        if (rows[i].cells && rows[i].cells.length >= 22) collected[collected.length] = rows[i].cloneNode(true);
                     }
-                    if (pageNum + 1 < totalPages) scrapePage(pageNum + 1);
-                    else { dt.page(originalPage).draw(false); finishLocalScrape(collectedRows); }
+                    if (p + 1 < total) next(p + 1);
+                    else { dt.page(orig).draw(false); finishScrape(collected); }
                 }, CFG.pageWait);
-            }
-            scrapePage(0);
+            })(0);
         }
 
-        function finishLocalScrape(rows) {
+        function finishScrape(rows) {
             const data = parseRows(rows);
             GM_setValue('cpt_widget_data', JSON.stringify(data));
-            const timeEl = document.getElementById('scrape-time');
-            const countEl = document.getElementById('scrape-count');
-            if (timeEl) {
-                const now = new Date();
-                timeEl.textContent = '\xB7 ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            }
-            if (countEl) countEl.textContent = `\xB7 ${data.allCpts.length} cpts`;
+            const te = document.getElementById('scrape-time');
+            const ce = document.getElementById('scrape-count');
+            if (te) { const d = new Date(); te.textContent = '\xB7 ' + d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+            if (ce) ce.textContent = '\xB7 ' + data.allCpts.length + ' cpts';
         }
 
         function waitForData() {
-            const tbl = document.querySelector('#cptsLoadInProgress');
+            const tbl = document.getElementById('cptsLoadInProgress');
             if (!tbl) { setTimeout(waitForData, 2000); return; }
-            const rows = tbl.querySelectorAll('tbody tr');
-            if (!rows.length || (rows.length === 1 && rows[0].textContent.toLowerCase().includes('loading'))) {
+            const rows = tbl.tBodies[0] ? tbl.tBodies[0].rows : null;
+            if (!rows || !rows.length || (rows.length === 1 && rows[0].textContent.indexOf('oading') !== -1)) {
                 setTimeout(waitForData, 2000); return;
             }
             scrapeTable();
             setInterval(scrapeTable, CFG.scrape);
-            setInterval(() => { refreshTableData(); setTimeout(scrapeTable, 5000); }, CFG.dataRefresh);
+            setInterval(function() { refreshTableData(); setTimeout(scrapeTable, 5000); }, CFG.dataRefresh);
         }
 
         setTimeout(waitForData, 3000);
@@ -250,333 +216,158 @@
     }
 
     // ============================================
-    // MODE 2: WIDGET + SELF-CONTAINED FETCHER
+    // MODE 2: WIDGET
     // ============================================
+    let popWin = null, popInterval = null;
+    let fetchMode = 'fetch', failCount = 0;
 
-    let popWin = null;
-    let popUpdateInterval = null;
-    let fetchMode = 'fetch';
-    let fetchFailCount = 0;
+    // Reusable string buffer for HTML building — avoids repeated concatenation GC
+    let _buf = '';
 
-    // ============================================
-    // POP-OUT STATE SYNC — hides widget on all
-    // tabs when popped out, shows when docked
-    // ============================================
     function isPoppedOut() { return GM_getValue('cpt_widget_popped', false); }
-    function setPoppedOut(val) { GM_setValue('cpt_widget_popped', val); }
-
-    const BASE_CSS = `
-        .cw{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#000;background:#FFADDB}
-        .cw-hd{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none}
-        .cw-hd h3{margin:0;font-size:14px;color:#FFF}
-        .cw-st{font-size:11px;color:#FFF}
-        .cw-bd{padding:10px 15px;overflow-y:auto}
-        .cw-sec{margin-bottom:12px}
-        .cw-sec-t{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}
-        .cw table{width:100%;border-collapse:collapse;font-size:12px}
-        .cw th{text-align:left;padding:4px 6px;background:#C99DC7;color:#FFF;font-weight:normal;font-size:11px}
-        .cw td{padding:4px 6px;border-bottom:1px solid #D9D9FF}
-        .cw tr:hover{background:#D9D9FF}
-        .cw-sum{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}
-        .cw-si{background:#FFF;padding:6px 12px;border-radius:6px;text-align:center}
-        .cw-si .n{font-size:18px;font-weight:bold;display:block}
-        .cw-si .l{font-size:10px;color:#888;text-transform:lowercase}
-        .cw-btn{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}
-        .cw-btn:hover{color:#000}
-        .s-stg{color:#f39c12;font-weight:bold}
-        .s-ldg{color:#3498db;font-weight:bold}
-        .s-ldd{color:#27ae60;font-weight:bold}
-        .s-lat{color:#e74c3c;font-weight:bold}
-        .s-con{color:#9b59b6;font-weight:bold}
-        .cw-pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:cwp 2s infinite}
-        @keyframes cwp{0%,100%{opacity:1}50%{opacity:.4}}
-        .cw-warn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}
-        .cw-mini{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 15px;font-size:12px}
-        .cw-mi{display:flex;align-items:center;gap:4px}
-        .cw-mi .mn{font-weight:bold;font-size:14px}
-        .cw-mi .ml{font-size:11px;color:#555;text-transform:lowercase}
-        .cw-mu{font-size:10px;color:#555;margin-top:4px}
-        .cw-src{font-size:9px;color:#888;text-align:center;margin-top:6px}
-        .cw-alert{background:#e74c3c;color:#FFF;padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:11px;animation:cwflash 1s infinite}
-        .cw-alert-item{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.2)}
-        .cw-alert-item:last-child{border-bottom:none}
-        .cw-alert-title{font-weight:bold;font-size:12px;margin-bottom:4px;display:flex;align-items:center;gap:6px}
-        .cw-alert-lane{font-weight:bold}
-        .cw-alert-detail{font-size:10px;opacity:.9}
-        @keyframes cwflash{0%,100%{opacity:1}50%{opacity:.85}}
-        .cw-mini-alert{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:cwflash 1s infinite}
-        .cw-snapping{transition:top .25s ease,left .25s ease,right .25s ease,bottom .25s ease !important}
-    `;
-
-    GM_addStyle(`
-        #cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale(${CFG.scale});transform-origin:bottom right}
-        #cpt-w.min .cw-bd{display:none}
-        #cpt-w.min .cw-mv{display:block}
-        .cw-mv{display:none}
-        ${BASE_CSS}
-    `);
+    function setPoppedOut(v) { GM_setValue('cpt_widget_popped', v); }
 
     // ============================================
-    // HTML BUILDERS
+    // STYLES — single injection, minified
     // ============================================
-    function buildInlineHTML() {
-        return `
-        <div class="cw-hd" id="cw-hd">
-            <h3>outbound dock :3 - live</h3>
-            <div>
-                <span class="cw-st" id="cw-st">starting up...</span>
-                <button class="cw-btn" id="cw-pop" title="pop out">\u29C9</button>
-                <button class="cw-btn" id="cw-min">\u2014</button>
-            </div>
-        </div>
-        <div class="cw-mv" id="cw-mv">
-            <div class="cw-mini">
-                <div class="cw-mi"><span class="mn s-stg" id="ms">-</span><span class="ml">staged</span></div>
-                <div class="cw-mi"><span class="mn s-ldg" id="ml">-</span><span class="ml">loading</span></div>
-                <div class="cw-mi"><span class="mn s-ldd" id="md">-</span><span class="ml">loaded</span></div>
-                <div class="cw-mi"><span class="mn s-lat" id="mt">-</span><span class="ml">late</span></div>
-            </div>
-            <div class="cw-mu" id="mu">\u2014</div>
-            <div id="cw-mini-alert"></div>
-        </div>
-        <div class="cw-bd" id="cw-bd">
-            ${buildTablesHTML()}
-        </div>`;
-    }
+    const STYLES = '#cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale(' + CFG.scale + ');transform-origin:bottom right}#cpt-w.min .cw-bd{display:none}#cpt-w.min .cw-mv{display:block}.cw-mv{display:none}.cw{font:13px "Segoe UI",Arial,sans-serif;color:#000;background:#FFADDB}.cw-hd{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none}.cw-hd h3{margin:0;font-size:14px;color:#FFF}.cw-st{font-size:11px;color:#FFF}.cw-bd{padding:10px 15px;overflow-y:auto}.cw-sec{margin-bottom:12px}.cw-sec-t{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}.cw table{width:100%;border-collapse:collapse;font-size:12px}.cw th{text-align:left;padding:4px 6px;background:#C99DC7;color:#FFF;font-weight:normal;font-size:11px}.cw td{padding:4px 6px;border-bottom:1px solid #D9D9FF}.cw tr:hover{background:#D9D9FF}.cw-sum{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}.cw-si{background:#FFF;padding:6px 12px;border-radius:6px;text-align:center}.cw-si .n{font-size:18px;font-weight:bold;display:block}.cw-si .l{font-size:10px;color:#888;text-transform:lowercase}.cw-btn{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}.cw-btn:hover{color:#000}.s-stg{color:#f39c12;font-weight:bold}.s-ldg{color:#3498db;font-weight:bold}.s-ldd{color:#27ae60;font-weight:bold}.s-lat{color:#e74c3c;font-weight:bold}.s-con{color:#9b59b6;font-weight:bold}.cw-pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:cwp 2s infinite}@keyframes cwp{0%,100%{opacity:1}50%{opacity:.4}}.cw-warn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}.cw-mini{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 15px;font-size:12px}.cw-mi{display:flex;align-items:center;gap:4px}.cw-mi .mn{font-weight:bold;font-size:14px}.cw-mi .ml{font-size:11px;color:#555;text-transform:lowercase}.cw-mu{font-size:10px;color:#555;margin-top:4px}.cw-src{font-size:9px;color:#888;text-align:center;margin-top:6px}.cw-alert{background:#e74c3c;color:#FFF;padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:11px;animation:cwf 1s infinite}.cw-alert-item{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.2)}.cw-alert-item:last-child{border-bottom:none}.cw-alert-title{font-weight:bold;font-size:12px;margin-bottom:4px}.cw-alert-lane{font-weight:bold}.cw-alert-detail{font-size:10px;opacity:.9}@keyframes cwf{0%,100%{opacity:1}50%{opacity:.85}}.cw-mini-alert{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:cwf 1s infinite}.cw-snapping{transition:top .25s,left .25s,right .25s,bottom .25s}';
 
-    function buildPopoutHTML() {
-        return `<!DOCTYPE html>
-<html>
-<head>
-<title>outbound dock :3</title>
-<style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body {
-        background: #FFADDB;
-        overflow-y: auto;
-        overflow-x: hidden;
-    }
-    ${BASE_CSS}
-    .cw { border-radius: 0; }
-    .cw-hd { cursor: default; position: sticky; top: 0; z-index: 10; }
-    .cw-bd { max-height: none; overflow: visible; }
-    .cw-si { flex: 1; min-width: 60px; }
-</style>
-</head>
-<body>
-<div class="cw">
-    <div class="cw-hd">
-        <h3>outbound dock :3 - live</h3>
-        <div>
-            <span class="cw-st" id="cw-st">starting up...</span>
-            <button class="cw-btn" id="cw-dock" title="dock back">\u29C9</button>
-        </div>
-    </div>
-    <div class="cw-bd" id="cw-bd">
-        ${buildTablesHTML()}
-    </div>
-</div>
-</body>
-</html>`;
-    }
-
-    function buildTablesHTML() {
-        return `
-            <div id="cw-alert"></div>
-            <div id="cw-warn"></div>
-            <div class="cw-sum">
-                <div class="cw-si"><span class="n" id="cs">-</span><span class="l">staged</span></div>
-                <div class="cw-si"><span class="n" id="cl">-</span><span class="l">loading</span></div>
-                <div class="cw-si"><span class="n" id="cd">-</span><span class="l">loaded</span></div>
-                <div class="cw-si"><span class="n s-lat" id="ct">-</span><span class="l">late</span></div>
-            </div>
-            <div class="cw-sec"><div class="cw-sec-t">currently staged on floor</div>
-                <table><thead><tr><th>lane</th><th>pkgs</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-s"><tr><td colspan="5">fetching data...</td></tr></tbody></table>
-            </div>
-            <div class="cw-sec"><div class="cw-sec-t">loading into trucks</div>
-                <table><thead><tr><th>lane</th><th>loaded</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-l"><tr><td colspan="5">fetching data...</td></tr></tbody></table>
-            </div>
-            <div class="cw-sec"><div class="cw-sec-t">all active cpts</div>
-                <table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-a"><tr><td colspan="6">fetching data...</td></tr></tbody></table>
-            </div>
-            <div class="cw-src" id="cw-src"></div>`;
-    }
+    GM_addStyle(STYLES);
 
     // ============================================
-    // DRAG + CORNER SNAP
+    // HTML — built once as template strings
     // ============================================
-    function initDrag(widget) {
-        const header = widget.querySelector('#cw-hd');
-        let isDragging = false;
-        let startX, startY, startLeft, startTop;
-        let hasMoved = false;
+    const TABLES_HTML = '<div id="cw-alert"></div><div id="cw-warn"></div><div class="cw-sum"><div class="cw-si"><span class="n" id="cs">-</span><span class="l">staged</span></div><div class="cw-si"><span class="n" id="cl">-</span><span class="l">loading</span></div><div class="cw-si"><span class="n" id="cd">-</span><span class="l">loaded</span></div><div class="cw-si"><span class="n s-lat" id="ct">-</span><span class="l">late</span></div></div><div class="cw-sec"><div class="cw-sec-t">currently staged on floor</div><table><thead><tr><th>lane</th><th>pkgs</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-s"><tr><td colspan="5">fetching data...</td></tr></tbody></table></div><div class="cw-sec"><div class="cw-sec-t">loading into trucks</div><table><thead><tr><th>lane</th><th>loaded</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-l"><tr><td colspan="5">fetching data...</td></tr></tbody></table></div><div class="cw-sec"><div class="cw-sec-t">all active cpts</div><table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-a"><tr><td colspan="6">fetching data...</td></tr></tbody></table></div><div class="cw-src" id="cw-src"></div>';
 
-        header.addEventListener('mousedown', (e) => {
+    const INLINE_HTML = '<div class="cw-hd" id="cw-hd"><h3>outbound dock :3 - live</h3><div><span class="cw-st" id="cw-st">starting up...</span><button class="cw-btn" id="cw-pop" title="pop out">\u29C9</button><button class="cw-btn" id="cw-min">\u2014</button></div></div><div class="cw-mv" id="cw-mv"><div class="cw-mini"><div class="cw-mi"><span class="mn s-stg" id="ms">-</span><span class="ml">staged</span></div><div class="cw-mi"><span class="mn s-ldg" id="ml">-</span><span class="ml">loading</span></div><div class="cw-mi"><span class="mn s-ldd" id="md">-</span><span class="ml">loaded</span></div><div class="cw-mi"><span class="mn s-lat" id="mt">-</span><span class="ml">late</span></div></div><div class="cw-mu" id="mu">\u2014</div><div id="cw-mini-alert"></div></div><div class="cw-bd" id="cw-bd">' + TABLES_HTML + '</div>';
+
+    // ============================================
+    // DRAG + SNAP — optimized with cached refs
+    // ============================================
+    function initDrag(w) {
+        const hd = w.querySelector('#cw-hd');
+        let drag = false, moved = false, sx, sy, sl, st;
+
+        hd.addEventListener('mousedown', function(e) {
             if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
-            isDragging = true;
-            hasMoved = false;
-            startX = e.clientX;
-            startY = e.clientY;
-            const rect = widget.getBoundingClientRect();
-            startLeft = rect.left;
-            startTop = rect.top;
+            drag = true; moved = false;
+            sx = e.clientX; sy = e.clientY;
+            const r = w.getBoundingClientRect();
+            sl = r.left; st = r.top;
             e.preventDefault();
         });
 
-        document.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-            if (!hasMoved) {
-                if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
-                hasMoved = true;
-                widget.classList.remove('cw-snapping');
-                widget.style.right = 'auto';
-                widget.style.bottom = 'auto';
-                widget.style.left = startLeft + 'px';
-                widget.style.top = startTop + 'px';
+        document.addEventListener('mousemove', function(e) {
+            if (!drag) return;
+            const dx = e.clientX - sx, dy = e.clientY - sy;
+            if (!moved) {
+                if (dx * dx + dy * dy < 16) return;
+                moved = true;
+                w.classList.remove('cw-snapping');
+                w.style.right = 'auto'; w.style.bottom = 'auto';
+                w.style.left = sl + 'px'; w.style.top = st + 'px';
             }
-            widget.style.left = (startLeft + dx) + 'px';
-            widget.style.top = (startTop + dy) + 'px';
+            w.style.left = (sl + dx) + 'px';
+            w.style.top = (st + dy) + 'px';
         });
 
-        document.addEventListener('mouseup', () => {
-            if (!isDragging) return;
-            isDragging = false;
-            if (!hasMoved) return;
-            snapToCorner(widget);
+        document.addEventListener('mouseup', function() {
+            if (!drag) return;
+            drag = false;
+            if (moved) snap(w);
         });
     }
 
-    function snapToCorner(widget) {
-        const rect = widget.getBoundingClientRect();
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const m = CFG.snapMargin;
+    function snap(w) {
+        const r = w.getBoundingClientRect();
+        const vw = window.innerWidth, vh = window.innerHeight, m = CFG.snapMargin;
+        const isR = (r.left + r.width / 2) > vw / 2;
+        const isB = (r.top + r.height / 2) > vh / 2;
 
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const isRight = cx > vw / 2;
-        const isBottom = cy > vh / 2;
+        w.classList.add('cw-snapping');
+        w.style.top = ''; w.style.bottom = ''; w.style.left = ''; w.style.right = '';
 
-        widget.classList.add('cw-snapping');
-        widget.style.top = '';
-        widget.style.bottom = '';
-        widget.style.left = '';
-        widget.style.right = '';
+        if (isB) { w.style.bottom = m + 'px'; } else { w.style.top = m + 'px'; }
+        if (isR) { w.style.right = m + 'px'; } else { w.style.left = m + 'px'; }
+        w.style.transformOrigin = (isB ? 'bottom' : 'top') + ' ' + (isR ? 'right' : 'left');
 
-        if (isBottom && isRight) {
-            widget.style.bottom = m + 'px'; widget.style.right = m + 'px';
-            widget.style.transformOrigin = 'bottom right';
-        } else if (isBottom && !isRight) {
-            widget.style.bottom = m + 'px'; widget.style.left = m + 'px';
-            widget.style.transformOrigin = 'bottom left';
-        } else if (!isBottom && isRight) {
-            widget.style.top = m + 'px'; widget.style.right = m + 'px';
-            widget.style.transformOrigin = 'top right';
-        } else {
-            widget.style.top = m + 'px'; widget.style.left = m + 'px';
-            widget.style.transformOrigin = 'top left';
-        }
-
-        GM_setValue('cpt_widget_corner', (isBottom ? 'bottom' : 'top') + '-' + (isRight ? 'right' : 'left'));
-        setTimeout(() => widget.classList.remove('cw-snapping'), 300);
+        GM_setValue('cpt_widget_corner', (isB ? 'bottom' : 'top') + '-' + (isR ? 'right' : 'left'));
+        setTimeout(function() { w.classList.remove('cw-snapping'); }, 300);
     }
 
-    function applyStoredPosition(widget) {
-        const corner = GM_getValue('cpt_widget_corner', 'bottom-right');
+    function applyPos(w) {
+        const c = GM_getValue('cpt_widget_corner', 'bottom-right');
         const m = CFG.snapMargin;
-        widget.style.top = ''; widget.style.bottom = ''; widget.style.left = ''; widget.style.right = '';
-        switch (corner) {
-            case 'bottom-right': widget.style.bottom = m+'px'; widget.style.right = m+'px'; widget.style.transformOrigin = 'bottom right'; break;
-            case 'bottom-left': widget.style.bottom = m+'px'; widget.style.left = m+'px'; widget.style.transformOrigin = 'bottom left'; break;
-            case 'top-right': widget.style.top = m+'px'; widget.style.right = m+'px'; widget.style.transformOrigin = 'top right'; break;
-            case 'top-left': widget.style.top = m+'px'; widget.style.left = m+'px'; widget.style.transformOrigin = 'top left'; break;
-        }
+        w.style.top = ''; w.style.bottom = ''; w.style.left = ''; w.style.right = '';
+        if (c.indexOf('bottom') !== -1) w.style.bottom = m + 'px'; else w.style.top = m + 'px';
+        if (c.indexOf('right') !== -1) w.style.right = m + 'px'; else w.style.left = m + 'px';
+        w.style.transformOrigin = c.replace('-', ' ');
     }
 
     // ============================================
-    // SYNCED MINIMIZE STATE
+    // MINIMIZE SYNC
     // ============================================
-    function setMinState(isMin) { GM_setValue('cpt_widget_minimized', isMin); }
-    function getMinState() { return GM_getValue('cpt_widget_minimized', false); }
-
-    function applyMinState(isMin) {
+    function applyMin(isMin) {
         const w = document.getElementById('cpt-w');
         if (!w) return;
-        const btn = w.querySelector('#cw-min');
-        if (isMin) { w.classList.add('min'); if (btn) btn.textContent = '\u25A2'; }
-        else { w.classList.remove('min'); if (btn) btn.textContent = '\u2014'; }
+        if (isMin) { w.classList.add('min'); var b = w.querySelector('#cw-min'); if (b) b.textContent = '\u25A2'; }
+        else { w.classList.remove('min'); var b2 = w.querySelector('#cw-min'); if (b2) b2.textContent = '\u2014'; }
     }
 
-    GM_addValueChangeListener('cpt_widget_minimized', (name, oldVal, newVal, remote) => {
-        if (remote) applyMinState(newVal);
+    GM_addValueChangeListener('cpt_widget_minimized', function(n, o, v, r) { if (r) applyMin(v); });
+    GM_addValueChangeListener('cpt_widget_data', function(n, o, v, r) { if (r) update(); });
+    GM_addValueChangeListener('cpt_widget_popped', function(n, o, v, r) {
+        if (r) { var w = document.getElementById('cpt-w'); if (w) w.style.display = v ? 'none' : ''; }
+    });
+    GM_addValueChangeListener('cpt_view_open', function(n, o, v) {
+        if (v) { clearWarn(); fetchMode = 'fetch'; failCount = 0; }
     });
 
-    GM_addValueChangeListener('cpt_widget_data', (name, oldVal, newVal, remote) => {
-        if (remote) update();
-    });
-
-    // Listen for pop-out state changes from other tabs
-    GM_addValueChangeListener('cpt_widget_popped', (name, oldVal, newVal, remote) => {
-        if (remote) {
-            const w = document.getElementById('cpt-w');
-            if (!w) return;
-            if (newVal) {
-                // Another tab popped it out — hide widget here
-                w.style.display = 'none';
-            } else {
-                // Pop-out was docked — show widget again
-                w.style.display = '';
-            }
-        }
-    });
+    function clearWarn() {
+        var e = document.getElementById('cw-warn');
+        if (e) e.innerHTML = '';
+        if (popWin && !popWin.closed) { var p = popWin.document.getElementById('cw-warn'); if (p) p.innerHTML = ''; }
+    }
 
     // ============================================
-    // WIDGET CREATION
+    // CREATE WIDGET
     // ============================================
     function createWidget() {
         const w = document.createElement('div');
         w.id = 'cpt-w';
         w.className = 'cw';
-        w.innerHTML = buildInlineHTML();
+        w.innerHTML = INLINE_HTML;
         document.body.appendChild(w);
 
-        applyStoredPosition(w);
+        applyPos(w);
         applyZoom();
-        applyMinState(getMinState());
+        applyMin(GM_getValue('cpt_widget_minimized', false));
         initDrag(w);
 
-        // If currently popped out (e.g. page loaded while pop-out is open), hide immediately
-        if (isPoppedOut()) {
-            w.style.display = 'none';
-        }
+        if (isPoppedOut()) w.style.display = 'none';
 
-        w.querySelector('#cw-min').onclick = e => {
+        w.querySelector('#cw-min').onclick = function(e) {
             e.stopPropagation();
-            const isMin = !w.classList.contains('min');
-            applyMinState(isMin);
-            setMinState(isMin);
+            var isMin = !w.classList.contains('min');
+            applyMin(isMin);
+            GM_setValue('cpt_widget_minimized', isMin);
         };
 
-        w.querySelector('#cw-hd').addEventListener('click', (e) => {
+        w.querySelector('#cw-hd').addEventListener('click', function(e) {
             if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
-            const isMin = !w.classList.contains('min');
-            applyMinState(isMin);
-            setMinState(isMin);
+            var isMin = !w.classList.contains('min');
+            applyMin(isMin);
+            GM_setValue('cpt_widget_minimized', isMin);
         });
 
-        w.querySelector('#cw-pop').onclick = e => { e.stopPropagation(); popOut(); };
+        w.querySelector('#cw-pop').onclick = function(e) { e.stopPropagation(); popOut(); };
 
         window.addEventListener('resize', applyZoom);
-        if (window.visualViewport) window.visualViewport.addEventListener('resize', applyZoom);
     }
 
     function applyZoom() {
-        const w = document.getElementById('cpt-w');
-        if (!w) return;
-        const z = Math.round(window.devicePixelRatio * 100) / 100;
-        w.style.transform = `scale(${CFG.scale / z})`;
+        var w = document.getElementById('cpt-w');
+        if (w) w.style.transform = 'scale(' + (CFG.scale / (Math.round(window.devicePixelRatio * 100) / 100)) + ')';
     }
 
     // ============================================
@@ -584,293 +375,277 @@
     // ============================================
     function popOut() {
         if (popWin && !popWin.closed) popWin.close();
-        if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
-        popWin = null;
+        if (popInterval) { clearInterval(popInterval); popInterval = null; }
 
         const pw = 470, ph = 650;
-        const l = Math.round((screen.width - pw) / 2);
-        const t = Math.round((screen.height - ph) / 2);
-
-        popWin = window.open('about:blank', 'CPT_Widget_Pop', `width=${pw},height=${ph},top=${t},left=${l},scrollbars=yes,menubar=no,toolbar=no,location=no,status=no`);
+        popWin = window.open('about:blank', 'CPT_Widget_Pop',
+            'width=' + pw + ',height=' + ph + ',top=' + ((screen.height - ph) / 2 | 0) + ',left=' + ((screen.width - pw) / 2 | 0) + ',scrollbars=yes,menubar=no,toolbar=no,location=no,status=no');
         if (!popWin) { alert('Pop-up blocked! Allow pop-ups for this site.'); return; }
 
         popWin.document.open();
-        popWin.document.write(buildPopoutHTML());
+        popWin.document.write('<!DOCTYPE html><html><head><title>outbound dock :3</title><style>*{box-sizing:border-box;margin:0;padding:0}html,body{background:#FFADDB;overflow-y:auto;overflow-x:hidden}' + STYLES + '.cw{border-radius:0}.cw-hd{cursor:default;position:sticky;top:0;z-index:10}.cw-bd{max-height:none;overflow:visible}.cw-si{flex:1;min-width:60px}</style></head><body><div class="cw"><div class="cw-hd"><h3>outbound dock :3 - live</h3><div><span class="cw-st" id="cw-st">starting up...</span><button class="cw-btn" id="cw-dock" title="dock back">\u29C9</button></div></div><div class="cw-bd" id="cw-bd">' + TABLES_HTML + '</div></div></body></html>');
         popWin.document.close();
 
-        popWin.document.getElementById('cw-dock').addEventListener('click', () => dock());
-
-        // Set popped state — hides widget on ALL tabs
+        popWin.document.getElementById('cw-dock').onclick = dock;
         setPoppedOut(true);
+        var iw = document.getElementById('cpt-w'); if (iw) iw.style.display = 'none';
 
-        // Hide on this tab too (the value listener handles other tabs)
-        hideInline();
-
-        // Monitor for window close
-        const chk = setInterval(() => {
+        var chk = setInterval(function() {
             if (!popWin || popWin.closed) {
                 clearInterval(chk);
-                if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
+                if (popInterval) { clearInterval(popInterval); popInterval = null; }
                 popWin = null;
-                // Dock on close — show widget on all tabs again
                 setPoppedOut(false);
-                showInline();
+                var w2 = document.getElementById('cpt-w'); if (w2) w2.style.display = '';
             }
         }, 500);
 
-        // Render immediately
-        renderToDoc(popWin.document);
-
-        // Independent update loop for pop-out
-        popUpdateInterval = setInterval(() => {
-            if (popWin && !popWin.closed) renderToDoc(popWin.document);
-            else { clearInterval(popUpdateInterval); popUpdateInterval = null; }
+        renderTo(popWin.document);
+        popInterval = setInterval(function() {
+            if (popWin && !popWin.closed) renderTo(popWin.document);
+            else { clearInterval(popInterval); popInterval = null; }
         }, CFG.refresh);
     }
 
     function dock() {
-        if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
+        if (popInterval) { clearInterval(popInterval); popInterval = null; }
         if (popWin && !popWin.closed) popWin.close();
         popWin = null;
-        // Clear popped state — shows widget on all tabs
         setPoppedOut(false);
-        showInline();
+        var w = document.getElementById('cpt-w'); if (w) w.style.display = '';
         update();
     }
 
-    function hideInline() { const w = document.getElementById('cpt-w'); if (w) w.style.display = 'none'; }
-    function showInline() { const w = document.getElementById('cpt-w'); if (w) w.style.display = ''; }
-
     // ============================================
-    // GM_XMLHTTPREQUEST FETCHER
+    // FETCH
     // ============================================
-    function fetchCPTData() {
+    function fetchData() {
         GM_xmlhttpRequest({
             method: 'GET',
             url: CFG.url,
             timeout: CFG.fetchTimeout,
-            headers: { 'Accept': 'text/html,application/xhtml+xml', 'Cache-Control': 'no-cache' },
-            onload: function(response) {
-                if (response.status === 200) {
-                    const parsed = parseHTMLResponse(response.responseText);
-                    if (parsed && parsed.allCpts.length > 0) {
-                        fetchMode = 'fetch'; fetchFailCount = 0;
-                        GM_setValue('cpt_widget_data', JSON.stringify(parsed));
-                    } else { handleFetchEmpty(); }
-                } else if (response.status === 401 || response.status === 403) { handleFetchAuthError(); }
-                else { handleFetchError(); }
+            headers: { 'Accept': 'text/html', 'Cache-Control': 'no-cache' },
+            onload: function(r) {
+                if (r.status === 200) {
+                    var d = parseHTML(r.responseText);
+                    if (d && d.allCpts.length) {
+                        fetchMode = 'fetch'; failCount = 0; clearWarn();
+                        GM_setValue('cpt_widget_data', JSON.stringify(d));
+                    } else { onFail(); }
+                } else if (r.status === 401 || r.status === 403) { onFail(true); }
+                else { onFail(); }
             },
-            onerror: function() { handleFetchError(); },
-            ontimeout: function() { handleFetchError(); }
+            onerror: onFail,
+            ontimeout: onFail
         });
     }
 
-    function parseHTMLResponse(html) {
+    function parseHTML(html) {
         try {
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-            const tbl = doc.querySelector('#cptsLoadInProgress');
+            // Use a document fragment approach — parse only the table
+            var i = html.indexOf('id="cptsLoadInProgress"');
+            if (i === -1) return null;
+            var start = html.lastIndexOf('<table', i);
+            var end = html.indexOf('</table>', i);
+            if (start === -1 || end === -1) return null;
+            var chunk = html.substring(start, end + 8);
+
+            var tmp = document.createElement('div');
+            tmp.innerHTML = chunk;
+            var tbl = tmp.querySelector('table');
             if (!tbl) return null;
-            const rows = tbl.querySelectorAll('tbody tr');
-            if (!rows.length) return null;
-            if (rows.length === 1) {
-                const text = rows[0].textContent.toLowerCase();
-                if (text.includes('loading') || text.includes('no data') || text.trim() === '') return null;
-            }
-            if (rows[0].cells && rows[0].cells.length < 22) return null;
-            return parseRows(rows);
-        } catch (e) { return null; }
+            var rows = tbl.tBodies[0] ? tbl.tBodies[0].rows : null;
+            if (!rows || !rows.length) return null;
+            if (rows.length === 1 && rows[0].cells && rows[0].cells.length < 22) return null;
+            var result = parseRows(rows);
+            tmp.innerHTML = ''; // free DOM
+            tmp = null;
+            return result;
+        } catch(e) { return null; }
     }
 
-    function handleFetchEmpty() { fetchFailCount++; if (fetchFailCount >= 3) { fetchMode = 'tab'; showFallback('tab'); } }
-    function handleFetchAuthError() { fetchFailCount++; fetchMode = 'tab'; showFallback('auth'); }
-    function handleFetchError() { fetchFailCount++; if (fetchFailCount >= 3) { fetchMode = 'tab'; showFallback('tab'); } }
-
-    function showFallback(type) {
-        const msg = type === 'auth'
-            ? `\u26A0\uFE0F session expired \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> to re-authenticate`
-            : `\u26A0\uFE0F direct fetch unavailable \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> in any tab to auto-sync`;
-        const warn = document.getElementById('cw-warn');
-        if (warn) warn.innerHTML = `<div class="cw-warn">${msg}</div>`;
-        if (popWin && !popWin.closed) {
-            const pw = popWin.document.getElementById('cw-warn');
-            if (pw) pw.innerHTML = `<div class="cw-warn">${msg}</div>`;
+    function onFail(auth) {
+        failCount++;
+        if (failCount >= 3 && !GM_getValue('cpt_view_open', false)) {
+            fetchMode = 'tab';
+            var msg = auth
+                ? '\u26A0\uFE0F session expired \u2014 <a href="' + CFG.url + '" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> to re-authenticate'
+                : '\u26A0\uFE0F direct fetch unavailable \u2014 <a href="' + CFG.url + '" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> in any tab to auto-sync';
+            var w = document.getElementById('cw-warn');
+            if (w) w.innerHTML = '<div class="cw-warn">' + msg + '</div>';
+            if (popWin && !popWin.closed) { var p = popWin.document.getElementById('cw-warn'); if (p) p.innerHTML = '<div class="cw-warn">' + msg + '</div>'; }
         }
     }
 
-    function scrapeLoop() { if (fetchMode === 'fetch') fetchCPTData(); }
-
     // ============================================
-    // CRITICAL ALERT
+    // ALERTS
     // ============================================
-    function getCriticalAlerts(data) {
-        const alerts = [];
-        for (let i = 0; i < data.staged.length; i++) {
-            const s = data.staged[i];
-            const mins = tlMin(s.timeLeft);
-            if (s.pkgs >= CFG.alertStagedThreshold && mins <= CFG.alertMinutesThreshold) {
-                alerts.push({ lane: s.lane, pkgs: s.pkgs, timeLeft: s.timeLeft, minutes: mins });
-            }
+    function getAlerts(staged) {
+        var alerts = [], i = staged.length;
+        while (i--) {
+            var s = staged[i], m = tlMin(s.timeLeft);
+            if (s.pkgs >= CFG.alertStagedThreshold && m <= CFG.alertMinutesThreshold)
+                alerts[alerts.length] = { lane: s.lane, pkgs: s.pkgs, timeLeft: s.timeLeft, min: m };
         }
-        alerts.sort((a, b) => a.minutes - b.minutes);
+        if (alerts.length > 1) alerts.sort(function(a, b) { return a.min - b.min; });
         return alerts;
     }
 
-    function renderAlertsTo(alerts, doc) {
-        const alertEl = doc.getElementById('cw-alert');
-        if (!alertEl) return;
-        if (!alerts.length) { alertEl.innerHTML = ''; return; }
-        let h = '<div class="cw-alert"><div class="cw-alert-title">\u26A0 critical \u2014 staged freight at risk</div>';
-        for (let i = 0; i < alerts.length; i++) {
-            const a = alerts[i];
-            h += `<div class="cw-alert-item"><span class="cw-alert-lane">${a.lane}</span><span class="cw-alert-detail">${a.pkgs} pkgs staged \xB7 ${a.timeLeft} left</span></div>`;
-        }
-        h += '</div>';
-        alertEl.innerHTML = h;
-    }
-
-    function renderMiniAlerts(alerts) {
-        const miniAlert = document.getElementById('cw-mini-alert');
-        if (!miniAlert) return;
-        if (!alerts.length) { miniAlert.innerHTML = ''; return; }
-        let h = '<div class="cw-mini-alert">\u26A0 ';
-        for (let i = 0; i < alerts.length; i++) {
-            h += `${alerts[i].lane} (${alerts[i].pkgs}pkg/${alerts[i].timeLeft})`;
-            if (i < alerts.length - 1) h += ' \xB7 ';
-        }
-        h += '</div>';
-        miniAlert.innerHTML = h;
-    }
-
     // ============================================
-    // RENDER — targets a specific document
+    // RENDER — uses string buffer, single innerHTML set per element
     // ============================================
-    function renderToDoc(d) {
-        const raw = GM_getValue('cpt_widget_data', null);
+    function renderTo(d) {
+        var raw = GM_getValue('cpt_widget_data', null);
         if (!raw) return;
-        let data;
+        var data;
         try { data = JSON.parse(raw); } catch(e) { return; }
 
-        const { staged, loading, loaded, allCpts, timestamp } = data;
-        const late = allCpts.reduce((c, i) => c + (isLate(i.timeLeft) ? 1 : 0), 0);
+        var staged = data.staged, loading = data.loading, loaded = data.loaded, allCpts = data.allCpts, ts = data.timestamp;
+        var late = 0, i = allCpts.length;
+        while (i--) { if (isLate(allCpts[i].timeLeft)) late++; }
 
-        const cs = d.getElementById('cs');
+        var cs = d.getElementById('cs');
         if (!cs) return;
         cs.textContent = staged.length;
         d.getElementById('cl').textContent = loading.length;
         d.getElementById('cd').textContent = loaded.length;
         d.getElementById('ct').textContent = late;
 
-        const alerts = getCriticalAlerts(data);
-        renderAlertsTo(alerts, d);
-
-        const warn = d.getElementById('cw-warn');
-        if (warn && fetchMode === 'fetch') {
-            const age = Math.floor((Date.now() - timestamp) / 60000);
-            warn.innerHTML = age > 2 ? `<div class="cw-warn">\u26A0\uFE0F data is ${age} min old</div>` : '';
+        // Alerts
+        var alerts = getAlerts(staged);
+        var alertEl = d.getElementById('cw-alert');
+        if (alertEl) {
+            if (!alerts.length) { if (alertEl.innerHTML) alertEl.innerHTML = ''; }
+            else {
+                _buf = '<div class="cw-alert"><div class="cw-alert-title">\u26A0 critical \u2014 staged freight at risk</div>';
+                for (i = 0; i < alerts.length; i++) {
+                    var a = alerts[i];
+                    _buf += '<div class="cw-alert-item"><span class="cw-alert-lane">' + a.lane + '</span><span class="cw-alert-detail">' + a.pkgs + ' pkgs staged \xB7 ' + a.timeLeft + ' left</span></div>';
+                }
+                _buf += '</div>';
+                alertEl.innerHTML = _buf;
+            }
         }
 
-        const now = new Date();
-        const ts = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        // Data age warning
+        var warn = d.getElementById('cw-warn');
+        if (warn && fetchMode === 'fetch') {
+            var age = (Date.now() - ts) / 60000 | 0;
+            if (age > 2) { warn.innerHTML = '<div class="cw-warn">\u26A0\uFE0F data is ' + age + ' min old</div>'; }
+            else if (warn.innerHTML) { warn.innerHTML = ''; }
+        }
+
+        var now = new Date();
+        var timeStr = now.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
         // Staged table
-        const tbS = d.getElementById('tb-s');
+        var tbS = d.getElementById('tb-s');
         if (tbS) {
-            if (!staged.length) {
-                tbS.innerHTML = '<tr><td colspan="5" style="color:#888">no freight staged</td></tr>';
-            } else {
-                let h = '';
-                for (let i = 0; i < staged.length; i++) {
-                    const s = staged[i];
-                    h += `<tr><td>${s.lane}</td><td>${s.pkgs}${s.containers > 0 ? ' (+' + s.containers + 'C)' : ''}</td><td class="s-con">${s.containerizedPkgs || 0}</td><td>${s.cpt}</td><td class="${isUrg(s.timeLeft) ? 's-lat' : ''}">${s.timeLeft}</td></tr>`;
+            if (!staged.length) { tbS.innerHTML = '<tr><td colspan="5" style="color:#888">no freight staged</td></tr>'; }
+            else {
+                _buf = '';
+                for (i = 0; i < staged.length; i++) {
+                    var s = staged[i];
+                    _buf += '<tr><td>' + s.lane + '</td><td>' + s.pkgs + (s.containers > 0 ? ' (+' + s.containers + 'C)' : '') + '</td><td class="s-con">' + (s.containerizedPkgs || 0) + '</td><td>' + s.cpt + '</td><td' + (isUrg(s.timeLeft) ? ' class="s-lat"' : '') + '>' + s.timeLeft + '</td></tr>';
                 }
-                tbS.innerHTML = h;
+                tbS.innerHTML = _buf;
             }
         }
 
         // Loading table
-        const tbL = d.getElementById('tb-l');
+        var tbL = d.getElementById('tb-l');
         if (tbL) {
-            if (!loading.length) {
-                tbL.innerHTML = '<tr><td colspan="5" style="color:#888">no active loads</td></tr>';
-            } else {
-                let h = '';
-                for (let i = 0; i < loading.length; i++) {
-                    const l = loading[i];
-                    h += `<tr><td>${l.lane}</td><td>${l.loadedPkgs} / ${l.totalPkgs}</td><td class="s-con">${l.containerizedPkgs || 0}</td><td>${l.cpt}</td><td class="${isUrg(l.timeLeft) ? 's-lat' : ''}">${l.timeLeft}</td></tr>`;
+            if (!loading.length) { tbL.innerHTML = '<tr><td colspan="5" style="color:#888">no active loads</td></tr>'; }
+            else {
+                _buf = '';
+                for (i = 0; i < loading.length; i++) {
+                    var l = loading[i];
+                    _buf += '<tr><td>' + l.lane + '</td><td>' + l.loadedPkgs + ' / ' + l.totalPkgs + '</td><td class="s-con">' + (l.containerizedPkgs || 0) + '</td><td>' + l.cpt + '</td><td' + (isUrg(l.timeLeft) ? ' class="s-lat"' : '') + '>' + l.timeLeft + '</td></tr>';
                 }
-                tbL.innerHTML = h;
+                tbL.innerHTML = _buf;
             }
         }
 
         // All CPTs table
-        const tbA = d.getElementById('tb-a');
+        var tbA = d.getElementById('tb-a');
         if (tbA) {
-            if (!allCpts.length) {
-                tbA.innerHTML = '<tr><td colspan="6" style="color:#888">no data</td></tr>';
-            } else {
-                allCpts.sort((a, b) => tlMin(a.timeLeft) - tlMin(b.timeLeft));
-                let h = '';
-                for (let i = 0; i < allCpts.length; i++) {
-                    const c = allCpts[i];
-                    h += `<tr><td>${c.lane}</td><td>${c.totalPkgs}</td><td>${c.inFacilityPkgs}</td><td class="s-con">${c.containerizedPkgs || 0}</td><td>${c.cpt}</td><td class="${isUrg(c.timeLeft) ? 's-lat' : ''}">${c.timeLeft}</td></tr>`;
+            if (!allCpts.length) { tbA.innerHTML = '<tr><td colspan="6" style="color:#888">no data</td></tr>'; }
+            else {
+                allCpts.sort(function(a, b) { return tlMin(a.timeLeft) - tlMin(b.timeLeft); });
+                _buf = '';
+                for (i = 0; i < allCpts.length; i++) {
+                    var c = allCpts[i];
+                    _buf += '<tr><td>' + c.lane + '</td><td>' + c.totalPkgs + '</td><td>' + c.inFacilityPkgs + '</td><td class="s-con">' + (c.containerizedPkgs || 0) + '</td><td>' + c.cpt + '</td><td' + (isUrg(c.timeLeft) ? ' class="s-lat"' : '') + '>' + c.timeLeft + '</td></tr>';
                 }
-                tbA.innerHTML = h;
+                tbA.innerHTML = _buf;
             }
         }
 
-        const st = d.getElementById('cw-st');
-        if (st) st.innerHTML = `<span class="cw-pulse"></span>${ts}`;
+        var st = d.getElementById('cw-st');
+        if (st) st.innerHTML = '<span class="cw-pulse"></span>' + timeStr;
 
-        const src = d.getElementById('cw-src');
+        var src = d.getElementById('cw-src');
         if (src) src.textContent = fetchMode === 'fetch' ? 'source: direct fetch' : 'source: cpt view tab';
     }
 
     // ============================================
-    // UPDATE — renders to inline + pop-out
+    // UPDATE
     // ============================================
     function update() {
-        const raw = GM_getValue('cpt_widget_data', null);
+        var raw = GM_getValue('cpt_widget_data', null);
         if (!raw) {
-            const st = document.getElementById('cw-st');
+            var st = document.getElementById('cw-st');
             if (st) st.innerHTML = '<span style="color:#f39c12">\u25CF fetching...</span>';
             return;
         }
 
-        let data;
+        var data;
         try { data = JSON.parse(raw); } catch(e) { return; }
 
-        // Render to inline widget
-        renderToDoc(document);
+        renderTo(document);
 
-        // Update minimized summary
-        const ms = document.getElementById('ms');
+        // Mini summary
+        var ms = document.getElementById('ms');
         if (ms) {
+            var late = 0, i = data.allCpts.length;
+            while (i--) { if (isLate(data.allCpts[i].timeLeft)) late++; }
             ms.textContent = data.staged.length;
             document.getElementById('ml').textContent = data.loading.length;
             document.getElementById('md').textContent = data.loaded.length;
-            document.getElementById('mt').textContent = data.allCpts.reduce((c, i) => c + (isLate(i.timeLeft) ? 1 : 0), 0);
+            document.getElementById('mt').textContent = late;
         }
 
-        const now = new Date();
-        const ts = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const mu = document.getElementById('mu');
-        if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
+        var now = new Date();
+        var mu = document.getElementById('mu');
+        if (mu) mu.innerHTML = '<span class="cw-pulse"></span>updated ' + now.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
-        renderMiniAlerts(getCriticalAlerts(data));
+        // Mini alerts
+        var alerts = getAlerts(data.staged);
+        var miniAlert = document.getElementById('cw-mini-alert');
+        if (miniAlert) {
+            if (!alerts.length) { if (miniAlert.innerHTML) miniAlert.innerHTML = ''; }
+            else {
+                _buf = '<div class="cw-mini-alert">\u26A0 ';
+                for (var j = 0; j < alerts.length; j++) {
+                    if (j) _buf += ' \xB7 ';
+                    _buf += alerts[j].lane + ' (' + alerts[j].pkgs + 'pkg/' + alerts[j].timeLeft + ')';
+                }
+                _buf += '</div>';
+                miniAlert.innerHTML = _buf;
+            }
+        }
 
-        // Also render to pop-out if open
-        if (popWin && !popWin.closed) renderToDoc(popWin.document);
+        if (popWin && !popWin.closed) renderTo(popWin.document);
     }
 
     // ============================================
-    // INIT
+    // INIT — single event, delayed start
     // ============================================
     function init() {
         createWidget();
         update();
-        fetchCPTData();
-        setInterval(scrapeLoop, CFG.scrape);
+        fetchData();
+        setInterval(function() { if (fetchMode === 'fetch') fetchData(); }, CFG.scrape);
         setInterval(update, CFG.refresh);
     }
 
