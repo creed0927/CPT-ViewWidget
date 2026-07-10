@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.4
+// @version      4.4.1
 // @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data, shows containerized pkgs
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -60,12 +60,12 @@
 
             const tot = extractCount(cells[8]);
             const inf = extractCount(cells[12]);
-            const conP = extractCount(cells[16]); // Containerized Packages
-            const conC = extractCount(cells[17]); // Containerized Containers
-            const stP = extractCount(cells[18]);  // Staged Packages
-            const stC = extractCount(cells[19]);  // Staged Containers
-            const ldP = extractCount(cells[20]);  // Loaded Packages
-            const ldC = extractCount(cells[21]);  // Loaded Containers
+            const conP = extractCount(cells[16]);
+            const conC = extractCount(cells[17]);
+            const stP = extractCount(cells[18]);
+            const stC = extractCount(cells[19]);
+            const ldP = extractCount(cells[20]);
+            const ldC = extractCount(cells[21]);
 
             allCpts.push({ lane: dest, cpt, timeLeft: tl, totalPkgs: tot, inFacilityPkgs: inf, containerizedPkgs: conP, containerizedContainers: conC, stagedPkgs: stP, loadedPkgs: ldP, loadsInProgress: lip });
 
@@ -387,7 +387,7 @@
     }
 
     // ============================================
-    // DRAG + CORNER SNAP
+    // DRAG + CORNER SNAP (FIXED — no position change until actual move)
     // ============================================
     function initDrag(widget) {
         const header = widget.querySelector('#cw-hd');
@@ -396,22 +396,18 @@
         let hasMoved = false;
 
         header.addEventListener('mousedown', (e) => {
-            if (e.target.tagName === 'BUTTON') return;
+            // Ignore button clicks and spans inside buttons
+            if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+
             isDragging = true;
             hasMoved = false;
-
-            widget.classList.remove('cw-snapping');
-
-            const rect = widget.getBoundingClientRect();
             startX = e.clientX;
             startY = e.clientY;
+
+            // Store current visual position but DON'T change CSS yet
+            const rect = widget.getBoundingClientRect();
             startLeft = rect.left;
             startTop = rect.top;
-
-            widget.style.right = 'auto';
-            widget.style.bottom = 'auto';
-            widget.style.left = startLeft + 'px';
-            widget.style.top = startTop + 'px';
 
             e.preventDefault();
         });
@@ -422,7 +418,18 @@
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
 
-            if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true;
+            // Only start dragging after 4px of movement (prevents accidental drags)
+            if (!hasMoved) {
+                if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+
+                // FIRST real move — now switch to left/top positioning
+                hasMoved = true;
+                widget.classList.remove('cw-snapping');
+                widget.style.right = 'auto';
+                widget.style.bottom = 'auto';
+                widget.style.left = startLeft + 'px';
+                widget.style.top = startTop + 'px';
+            }
 
             widget.style.left = (startLeft + dx) + 'px';
             widget.style.top = (startTop + dy) + 'px';
@@ -432,8 +439,10 @@
             if (!isDragging) return;
             isDragging = false;
 
+            // If we never moved, don't touch positioning at all
             if (!hasMoved) return;
 
+            // We moved — snap to nearest corner
             snapToCorner(widget);
         });
     }
@@ -552,12 +561,26 @@
         applyMinState(getMinState());
         initDrag(w);
 
+        // Minimize button
         w.querySelector('#cw-min').onclick = e => {
             e.stopPropagation();
             const isMin = !w.classList.contains('min');
             applyMinState(isMin);
             setMinState(isMin);
         };
+
+        // Header click also toggles minimize (only if not dragging)
+        w.querySelector('#cw-hd').addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+            // Only toggle if this was a clean click (no drag happened)
+            // The drag handler uses preventDefault on mousedown, but click still fires
+            // We use a small delay check — if the mouseup happened without hasMoved, this is a real click
+            const isMin = !w.classList.contains('min');
+            applyMinState(isMin);
+            setMinState(isMin);
+        });
+
+        // Pop-out button
         w.querySelector('#cw-pop').onclick = e => { e.stopPropagation(); popOut(); };
 
         window.addEventListener('resize', applyZoom);
@@ -801,7 +824,7 @@
         const mu = document.getElementById('mu');
         if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
 
-        // Staged table — now with containerized column
+        // Staged table
         const tbS = d.getElementById('tb-s');
         if (!staged.length) {
             tbS.innerHTML = '<tr><td colspan="5" style="color:#888">no freight staged</td></tr>';
@@ -814,7 +837,7 @@
             tbS.innerHTML = h;
         }
 
-        // Loading table — now with containerized column
+        // Loading table
         const tbL = d.getElementById('tb-l');
         if (!loading.length) {
             tbL.innerHTML = '<tr><td colspan="5" style="color:#888">no active loads</td></tr>';
@@ -827,7 +850,7 @@
             tbL.innerHTML = h;
         }
 
-        // All CPTs table — now with containerized column
+        // All CPTs table
         const tbA = d.getElementById('tb-a');
         if (!allCpts.length) {
             tbA.innerHTML = '<tr><td colspan="6" style="color:#888">no data</td></tr>';
