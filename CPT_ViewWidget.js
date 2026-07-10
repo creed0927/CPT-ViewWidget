@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.4.3
-// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data, shows containerized pkgs
+// @version      4.5
+// @description  Self-contained CPT widget — single instance, hides from pages when popped out
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -21,7 +21,6 @@
 
     // ============================================
     // BAIL OUT IF WE'RE INSIDE THE POP-OUT WINDOW
-    // (prevents the script from injecting a duplicate widget)
     // ============================================
     if (window.name === 'CPT_Widget_Pop') return;
 
@@ -258,6 +257,13 @@
     let popUpdateInterval = null;
     let fetchMode = 'fetch';
     let fetchFailCount = 0;
+
+    // ============================================
+    // POP-OUT STATE SYNC — hides widget on all
+    // tabs when popped out, shows when docked
+    // ============================================
+    function isPoppedOut() { return GM_getValue('cpt_widget_popped', false); }
+    function setPoppedOut(val) { GM_setValue('cpt_widget_popped', val); }
 
     const BASE_CSS = `
         .cw{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#000;background:#FFADDB}
@@ -511,6 +517,21 @@
         if (remote) update();
     });
 
+    // Listen for pop-out state changes from other tabs
+    GM_addValueChangeListener('cpt_widget_popped', (name, oldVal, newVal, remote) => {
+        if (remote) {
+            const w = document.getElementById('cpt-w');
+            if (!w) return;
+            if (newVal) {
+                // Another tab popped it out — hide widget here
+                w.style.display = 'none';
+            } else {
+                // Pop-out was docked — show widget again
+                w.style.display = '';
+            }
+        }
+    });
+
     // ============================================
     // WIDGET CREATION
     // ============================================
@@ -525,6 +546,11 @@
         applyZoom();
         applyMinState(getMinState());
         initDrag(w);
+
+        // If currently popped out (e.g. page loaded while pop-out is open), hide immediately
+        if (isPoppedOut()) {
+            w.style.display = 'none';
+        }
 
         w.querySelector('#cw-min').onclick = e => {
             e.stopPropagation();
@@ -557,7 +583,6 @@
     // POP-OUT
     // ============================================
     function popOut() {
-        // Close any existing pop-out first
         if (popWin && !popWin.closed) popWin.close();
         if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
         popWin = null;
@@ -569,13 +594,17 @@
         popWin = window.open('about:blank', 'CPT_Widget_Pop', `width=${pw},height=${ph},top=${t},left=${l},scrollbars=yes,menubar=no,toolbar=no,location=no,status=no`);
         if (!popWin) { alert('Pop-up blocked! Allow pop-ups for this site.'); return; }
 
-        // Write fresh document into the pop-out
         popWin.document.open();
         popWin.document.write(buildPopoutHTML());
         popWin.document.close();
 
-        // Wire dock button
         popWin.document.getElementById('cw-dock').addEventListener('click', () => dock());
+
+        // Set popped state — hides widget on ALL tabs
+        setPoppedOut(true);
+
+        // Hide on this tab too (the value listener handles other tabs)
+        hideInline();
 
         // Monitor for window close
         const chk = setInterval(() => {
@@ -583,12 +612,11 @@
                 clearInterval(chk);
                 if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
                 popWin = null;
+                // Dock on close — show widget on all tabs again
+                setPoppedOut(false);
                 showInline();
             }
         }, 500);
-
-        // Hide inline widget
-        hideInline();
 
         // Render immediately
         renderToDoc(popWin.document);
@@ -604,6 +632,8 @@
         if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
         if (popWin && !popWin.closed) popWin.close();
         popWin = null;
+        // Clear popped state — shows widget on all tabs
+        setPoppedOut(false);
         showInline();
         update();
     }
