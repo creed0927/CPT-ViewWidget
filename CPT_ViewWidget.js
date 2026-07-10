@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.4.2
-// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data, shows containerized pkgs. Reworked pop-out.
+// @version      4.4.3
+// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data, shows containerized pkgs
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -18,6 +18,12 @@
 
 (function() {
     'use strict';
+
+    // ============================================
+    // BAIL OUT IF WE'RE INSIDE THE POP-OUT WINDOW
+    // (prevents the script from injecting a duplicate widget)
+    // ============================================
+    if (window.name === 'CPT_Widget_Pop') return;
 
     // ============================================
     // CONFIGURATION
@@ -305,7 +311,7 @@
     `);
 
     // ============================================
-    // HTML BUILDERS — separate for inline vs pop-out
+    // HTML BUILDERS
     // ============================================
     function buildInlineHTML() {
         return `
@@ -344,7 +350,6 @@
         overflow-y: auto;
         overflow-x: hidden;
     }
-    body { padding: 0; }
     ${BASE_CSS}
     .cw { border-radius: 0; }
     .cw-hd { cursor: default; position: sticky; top: 0; z-index: 10; }
@@ -353,7 +358,7 @@
 </style>
 </head>
 <body>
-<div class="cw" id="cpt-pop">
+<div class="cw">
     <div class="cw-hd">
         <h3>outbound dock :3 - live</h3>
         <div>
@@ -549,20 +554,14 @@
     }
 
     // ============================================
-    // POP-OUT (Reworked — proper sizing, no duplicates)
+    // POP-OUT
     // ============================================
     function popOut() {
         // Close any existing pop-out first
-        if (popWin && !popWin.closed) {
-            popWin.close();
-            popWin = null;
-        }
-        if (popUpdateInterval) {
-            clearInterval(popUpdateInterval);
-            popUpdateInterval = null;
-        }
+        if (popWin && !popWin.closed) popWin.close();
+        if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
+        popWin = null;
 
-        // Open with generous initial size
         const pw = 470, ph = 650;
         const l = Math.round((screen.width - pw) / 2);
         const t = Math.round((screen.height - ph) / 2);
@@ -570,15 +569,15 @@
         popWin = window.open('about:blank', 'CPT_Widget_Pop', `width=${pw},height=${ph},top=${t},left=${l},scrollbars=yes,menubar=no,toolbar=no,location=no,status=no`);
         if (!popWin) { alert('Pop-up blocked! Allow pop-ups for this site.'); return; }
 
-        // Write fresh document
+        // Write fresh document into the pop-out
         popWin.document.open();
         popWin.document.write(buildPopoutHTML());
         popWin.document.close();
 
-        // Wire up dock button
-        popWin.document.getElementById('cw-dock').addEventListener('click', () => { dock(); });
+        // Wire dock button
+        popWin.document.getElementById('cw-dock').addEventListener('click', () => dock());
 
-        // Monitor for close
+        // Monitor for window close
         const chk = setInterval(() => {
             if (!popWin || popWin.closed) {
                 clearInterval(chk);
@@ -591,12 +590,13 @@
         // Hide inline widget
         hideInline();
 
-        // Render current data into pop-out
-        update();
+        // Render immediately
+        renderToDoc(popWin.document);
 
-        // Set up independent render loop for pop-out
+        // Independent update loop for pop-out
         popUpdateInterval = setInterval(() => {
             if (popWin && !popWin.closed) renderToDoc(popWin.document);
+            else { clearInterval(popUpdateInterval); popUpdateInterval = null; }
         }, CFG.refresh);
     }
 
@@ -628,10 +628,10 @@
                         GM_setValue('cpt_widget_data', JSON.stringify(parsed));
                     } else { handleFetchEmpty(); }
                 } else if (response.status === 401 || response.status === 403) { handleFetchAuthError(); }
-                else { handleFetchError(response.status); }
+                else { handleFetchError(); }
             },
-            onerror: function() { handleFetchError('network'); },
-            ontimeout: function() { handleFetchError('timeout'); }
+            onerror: function() { handleFetchError(); },
+            ontimeout: function() { handleFetchError(); }
         });
     }
 
@@ -660,12 +660,8 @@
         const msg = type === 'auth'
             ? `\u26A0\uFE0F session expired \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> to re-authenticate`
             : `\u26A0\uFE0F direct fetch unavailable \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> in any tab to auto-sync`;
-
-        // Show in inline widget
         const warn = document.getElementById('cw-warn');
         if (warn) warn.innerHTML = `<div class="cw-warn">${msg}</div>`;
-
-        // Show in pop-out if open
         if (popWin && !popWin.closed) {
             const pw = popWin.document.getElementById('cw-warn');
             if (pw) pw.innerHTML = `<div class="cw-warn">${msg}</div>`;
@@ -692,18 +688,15 @@
 
     function renderAlertsTo(alerts, doc) {
         const alertEl = doc.getElementById('cw-alert');
-        if (alertEl) {
-            if (!alerts.length) { alertEl.innerHTML = ''; }
-            else {
-                let h = '<div class="cw-alert"><div class="cw-alert-title">\u26A0 critical \u2014 staged freight at risk</div>';
-                for (let i = 0; i < alerts.length; i++) {
-                    const a = alerts[i];
-                    h += `<div class="cw-alert-item"><span class="cw-alert-lane">${a.lane}</span><span class="cw-alert-detail">${a.pkgs} pkgs staged \xB7 ${a.timeLeft} left</span></div>`;
-                }
-                h += '</div>';
-                alertEl.innerHTML = h;
-            }
+        if (!alertEl) return;
+        if (!alerts.length) { alertEl.innerHTML = ''; return; }
+        let h = '<div class="cw-alert"><div class="cw-alert-title">\u26A0 critical \u2014 staged freight at risk</div>';
+        for (let i = 0; i < alerts.length; i++) {
+            const a = alerts[i];
+            h += `<div class="cw-alert-item"><span class="cw-alert-lane">${a.lane}</span><span class="cw-alert-detail">${a.pkgs} pkgs staged \xB7 ${a.timeLeft} left</span></div>`;
         }
+        h += '</div>';
+        alertEl.innerHTML = h;
     }
 
     function renderMiniAlerts(alerts) {
@@ -820,7 +813,7 @@
         // Render to inline widget
         renderToDoc(document);
 
-        // Update minimized summary (only on inline widget)
+        // Update minimized summary
         const ms = document.getElementById('ms');
         if (ms) {
             ms.textContent = data.staged.length;
@@ -834,13 +827,10 @@
         const mu = document.getElementById('mu');
         if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
 
-        // Mini alerts
         renderMiniAlerts(getCriticalAlerts(data));
 
         // Also render to pop-out if open
-        if (popWin && !popWin.closed) {
-            renderToDoc(popWin.document);
-        }
+        if (popWin && !popWin.closed) renderToDoc(popWin.document);
     }
 
     // ============================================
