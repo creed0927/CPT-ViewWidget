@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.4.1
-// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data, shows containerized pkgs
+// @version      4.4.2
+// @description  Self-contained CPT widget — draggable with corner snap, auto-refreshes data, shows containerized pkgs. Reworked pop-out.
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -153,14 +153,8 @@
                 0%, 100% { opacity: 1; }
                 50% { opacity: 0.4; }
             }
-            #cpt-scraper-badge .scrape-time {
-                font-size: 9px;
-                opacity: 0.8;
-            }
-            #cpt-scraper-badge .scrape-count {
-                font-size: 9px;
-                opacity: 0.7;
-            }
+            #cpt-scraper-badge .scrape-time { font-size: 9px; opacity: 0.8; }
+            #cpt-scraper-badge .scrape-count { font-size: 9px; opacity: 0.7; }
         `);
 
         const badge = document.createElement('div');
@@ -172,50 +166,34 @@
             if (window.jQuery) {
                 try {
                     const dt = window.jQuery('#cptsLoadInProgress').DataTable();
-                    if (dt.ajax && dt.ajax.url()) {
-                        dt.ajax.reload(null, false);
-                        return;
-                    }
+                    if (dt.ajax && dt.ajax.url()) { dt.ajax.reload(null, false); return; }
                 } catch(e) {}
             }
-
             const refreshBtn = document.querySelector(
                 'button.refresh, button[title="Refresh"], .refreshBtn, ' +
                 'input[type="submit"][value="Search"], button.search-btn, ' +
                 '#searchButton, .btn-refresh, [data-action="refresh"]'
             );
             if (refreshBtn) { refreshBtn.click(); return; }
-
             if (window.jQuery) {
-                try {
-                    const dt = window.jQuery('#cptsLoadInProgress').DataTable();
-                    dt.draw(false);
-                    return;
-                } catch(e) {}
+                try { window.jQuery('#cptsLoadInProgress').DataTable().draw(false); return; } catch(e) {}
             }
-
             window.location.reload();
         }
 
         function scrapeTable() {
             const tbl = document.querySelector('#cptsLoadInProgress');
             if (!tbl) return;
-
             const rows = tbl.querySelectorAll('tbody tr');
             if (!rows.length) return;
             if (rows.length === 1 && rows[0].textContent.toLowerCase().includes('loading')) return;
-
             if (window.jQuery) {
                 try {
                     const dt = window.jQuery('#cptsLoadInProgress').DataTable();
                     const info = dt.page.info();
-                    if (info.pages > 1) {
-                        scrapeAllPagesLocal(dt);
-                        return;
-                    }
+                    if (info.pages > 1) { scrapeAllPagesLocal(dt); return; }
                 } catch(e) {}
             }
-
             finishLocalScrape(rows);
         }
 
@@ -224,60 +202,42 @@
             const totalPages = info.pages;
             const originalPage = info.page;
             const collectedRows = [];
-
             function scrapePage(pageNum) {
                 dt.page(pageNum).draw(false);
                 setTimeout(() => {
                     const rows = document.querySelectorAll('#cptsLoadInProgress tbody tr');
                     for (let i = 0; i < rows.length; i++) {
-                        if (rows[i].cells && rows[i].cells.length >= 22) {
-                            collectedRows.push(rows[i].cloneNode(true));
-                        }
+                        if (rows[i].cells && rows[i].cells.length >= 22) collectedRows.push(rows[i].cloneNode(true));
                     }
-                    if (pageNum + 1 < totalPages) {
-                        scrapePage(pageNum + 1);
-                    } else {
-                        dt.page(originalPage).draw(false);
-                        finishLocalScrape(collectedRows);
-                    }
+                    if (pageNum + 1 < totalPages) scrapePage(pageNum + 1);
+                    else { dt.page(originalPage).draw(false); finishLocalScrape(collectedRows); }
                 }, CFG.pageWait);
             }
-
             scrapePage(0);
         }
 
         function finishLocalScrape(rows) {
             const data = parseRows(rows);
             GM_setValue('cpt_widget_data', JSON.stringify(data));
-
             const timeEl = document.getElementById('scrape-time');
             const countEl = document.getElementById('scrape-count');
             if (timeEl) {
                 const now = new Date();
                 timeEl.textContent = '\xB7 ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             }
-            if (countEl) {
-                countEl.textContent = `\xB7 ${data.allCpts.length} cpts`;
-            }
+            if (countEl) countEl.textContent = `\xB7 ${data.allCpts.length} cpts`;
         }
 
         function waitForData() {
             const tbl = document.querySelector('#cptsLoadInProgress');
             if (!tbl) { setTimeout(waitForData, 2000); return; }
-
             const rows = tbl.querySelectorAll('tbody tr');
             if (!rows.length || (rows.length === 1 && rows[0].textContent.toLowerCase().includes('loading'))) {
-                setTimeout(waitForData, 2000);
-                return;
+                setTimeout(waitForData, 2000); return;
             }
-
             scrapeTable();
             setInterval(scrapeTable, CFG.scrape);
-
-            setInterval(() => {
-                refreshTableData();
-                setTimeout(scrapeTable, 5000);
-            }, CFG.dataRefresh);
+            setInterval(() => { refreshTableData(); setTimeout(scrapeTable, 5000); }, CFG.dataRefresh);
         }
 
         setTimeout(waitForData, 3000);
@@ -289,6 +249,7 @@
     // ============================================
 
     let popWin = null;
+    let popUpdateInterval = null;
     let fetchMode = 'fetch';
     let fetchFailCount = 0;
 
@@ -297,7 +258,7 @@
         .cw-hd{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none}
         .cw-hd h3{margin:0;font-size:14px;color:#FFF}
         .cw-st{font-size:11px;color:#FFF}
-        .cw-bd{padding:10px 15px;max-height:440px;overflow-y:auto}
+        .cw-bd{padding:10px 15px;overflow-y:auto}
         .cw-sec{margin-bottom:12px}
         .cw-sec-t{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}
         .cw table{width:100%;border-collapse:collapse;font-size:12px}
@@ -343,18 +304,20 @@
         ${BASE_CSS}
     `);
 
-    function buildHTML(isPopout) {
+    // ============================================
+    // HTML BUILDERS — separate for inline vs pop-out
+    // ============================================
+    function buildInlineHTML() {
         return `
         <div class="cw-hd" id="cw-hd">
             <h3>outbound dock :3 - live</h3>
             <div>
                 <span class="cw-st" id="cw-st">starting up...</span>
-                ${isPopout
-                    ? '<button class="cw-btn" id="cw-dock" title="dock back">\u29C9</button>'
-                    : '<button class="cw-btn" id="cw-pop" title="pop out">\u29C9</button><button class="cw-btn" id="cw-min">\u2014</button>'}
+                <button class="cw-btn" id="cw-pop" title="pop out">\u29C9</button>
+                <button class="cw-btn" id="cw-min">\u2014</button>
             </div>
         </div>
-        ${!isPopout ? `<div class="cw-mv" id="cw-mv">
+        <div class="cw-mv" id="cw-mv">
             <div class="cw-mini">
                 <div class="cw-mi"><span class="mn s-stg" id="ms">-</span><span class="ml">staged</span></div>
                 <div class="cw-mi"><span class="mn s-ldg" id="ml">-</span><span class="ml">loading</span></div>
@@ -363,8 +326,51 @@
             </div>
             <div class="cw-mu" id="mu">\u2014</div>
             <div id="cw-mini-alert"></div>
-        </div>` : ''}
+        </div>
         <div class="cw-bd" id="cw-bd">
+            ${buildTablesHTML()}
+        </div>`;
+    }
+
+    function buildPopoutHTML() {
+        return `<!DOCTYPE html>
+<html>
+<head>
+<title>outbound dock :3</title>
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+        background: #FFADDB;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+    body { padding: 0; }
+    ${BASE_CSS}
+    .cw { border-radius: 0; }
+    .cw-hd { cursor: default; position: sticky; top: 0; z-index: 10; }
+    .cw-bd { max-height: none; overflow: visible; }
+    .cw-si { flex: 1; min-width: 60px; }
+</style>
+</head>
+<body>
+<div class="cw" id="cpt-pop">
+    <div class="cw-hd">
+        <h3>outbound dock :3 - live</h3>
+        <div>
+            <span class="cw-st" id="cw-st">starting up...</span>
+            <button class="cw-btn" id="cw-dock" title="dock back">\u29C9</button>
+        </div>
+    </div>
+    <div class="cw-bd" id="cw-bd">
+        ${buildTablesHTML()}
+    </div>
+</div>
+</body>
+</html>`;
+    }
+
+    function buildTablesHTML() {
+        return `
             <div id="cw-alert"></div>
             <div id="cw-warn"></div>
             <div class="cw-sum">
@@ -382,12 +388,11 @@
             <div class="cw-sec"><div class="cw-sec-t">all active cpts</div>
                 <table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tb-a"><tr><td colspan="6">fetching data...</td></tr></tbody></table>
             </div>
-            <div class="cw-src" id="cw-src"></div>
-        </div>`;
+            <div class="cw-src" id="cw-src"></div>`;
     }
 
     // ============================================
-    // DRAG + CORNER SNAP (FIXED — no position change until actual move)
+    // DRAG + CORNER SNAP
     // ============================================
     function initDrag(widget) {
         const header = widget.querySelector('#cw-hd');
@@ -396,33 +401,23 @@
         let hasMoved = false;
 
         header.addEventListener('mousedown', (e) => {
-            // Ignore button clicks and spans inside buttons
             if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
-
             isDragging = true;
             hasMoved = false;
             startX = e.clientX;
             startY = e.clientY;
-
-            // Store current visual position but DON'T change CSS yet
             const rect = widget.getBoundingClientRect();
             startLeft = rect.left;
             startTop = rect.top;
-
             e.preventDefault();
         });
 
         document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
-
-            // Only start dragging after 4px of movement (prevents accidental drags)
             if (!hasMoved) {
                 if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
-
-                // FIRST real move — now switch to left/top positioning
                 hasMoved = true;
                 widget.classList.remove('cw-snapping');
                 widget.style.right = 'auto';
@@ -430,19 +425,14 @@
                 widget.style.left = startLeft + 'px';
                 widget.style.top = startTop + 'px';
             }
-
             widget.style.left = (startLeft + dx) + 'px';
             widget.style.top = (startTop + dy) + 'px';
         });
 
-        document.addEventListener('mouseup', (e) => {
+        document.addEventListener('mouseup', () => {
             if (!isDragging) return;
             isDragging = false;
-
-            // If we never moved, don't touch positioning at all
             if (!hasMoved) return;
-
-            // We moved — snap to nearest corner
             snapToCorner(widget);
         });
     }
@@ -451,76 +441,46 @@
         const rect = widget.getBoundingClientRect();
         const vw = window.innerWidth;
         const vh = window.innerHeight;
-        const ww = rect.width;
         const m = CFG.snapMargin;
 
-        const cx = rect.left + ww / 2;
+        const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
-
         const isRight = cx > vw / 2;
         const isBottom = cy > vh / 2;
 
         widget.classList.add('cw-snapping');
-
         widget.style.top = '';
         widget.style.bottom = '';
         widget.style.left = '';
         widget.style.right = '';
 
         if (isBottom && isRight) {
-            widget.style.bottom = m + 'px';
-            widget.style.right = m + 'px';
+            widget.style.bottom = m + 'px'; widget.style.right = m + 'px';
             widget.style.transformOrigin = 'bottom right';
         } else if (isBottom && !isRight) {
-            widget.style.bottom = m + 'px';
-            widget.style.left = m + 'px';
+            widget.style.bottom = m + 'px'; widget.style.left = m + 'px';
             widget.style.transformOrigin = 'bottom left';
         } else if (!isBottom && isRight) {
-            widget.style.top = m + 'px';
-            widget.style.right = m + 'px';
+            widget.style.top = m + 'px'; widget.style.right = m + 'px';
             widget.style.transformOrigin = 'top right';
         } else {
-            widget.style.top = m + 'px';
-            widget.style.left = m + 'px';
+            widget.style.top = m + 'px'; widget.style.left = m + 'px';
             widget.style.transformOrigin = 'top left';
         }
 
-        const corner = (isBottom ? 'bottom' : 'top') + '-' + (isRight ? 'right' : 'left');
-        GM_setValue('cpt_widget_corner', corner);
-
+        GM_setValue('cpt_widget_corner', (isBottom ? 'bottom' : 'top') + '-' + (isRight ? 'right' : 'left'));
         setTimeout(() => widget.classList.remove('cw-snapping'), 300);
     }
 
     function applyStoredPosition(widget) {
         const corner = GM_getValue('cpt_widget_corner', 'bottom-right');
         const m = CFG.snapMargin;
-
-        widget.style.top = '';
-        widget.style.bottom = '';
-        widget.style.left = '';
-        widget.style.right = '';
-
+        widget.style.top = ''; widget.style.bottom = ''; widget.style.left = ''; widget.style.right = '';
         switch (corner) {
-            case 'bottom-right':
-                widget.style.bottom = m + 'px';
-                widget.style.right = m + 'px';
-                widget.style.transformOrigin = 'bottom right';
-                break;
-            case 'bottom-left':
-                widget.style.bottom = m + 'px';
-                widget.style.left = m + 'px';
-                widget.style.transformOrigin = 'bottom left';
-                break;
-            case 'top-right':
-                widget.style.top = m + 'px';
-                widget.style.right = m + 'px';
-                widget.style.transformOrigin = 'top right';
-                break;
-            case 'top-left':
-                widget.style.top = m + 'px';
-                widget.style.left = m + 'px';
-                widget.style.transformOrigin = 'top left';
-                break;
+            case 'bottom-right': widget.style.bottom = m+'px'; widget.style.right = m+'px'; widget.style.transformOrigin = 'bottom right'; break;
+            case 'bottom-left': widget.style.bottom = m+'px'; widget.style.left = m+'px'; widget.style.transformOrigin = 'bottom left'; break;
+            case 'top-right': widget.style.top = m+'px'; widget.style.right = m+'px'; widget.style.transformOrigin = 'top right'; break;
+            case 'top-left': widget.style.top = m+'px'; widget.style.left = m+'px'; widget.style.transformOrigin = 'top left'; break;
         }
     }
 
@@ -553,7 +513,7 @@
         const w = document.createElement('div');
         w.id = 'cpt-w';
         w.className = 'cw';
-        w.innerHTML = buildHTML(false);
+        w.innerHTML = buildInlineHTML();
         document.body.appendChild(w);
 
         applyStoredPosition(w);
@@ -561,7 +521,6 @@
         applyMinState(getMinState());
         initDrag(w);
 
-        // Minimize button
         w.querySelector('#cw-min').onclick = e => {
             e.stopPropagation();
             const isMin = !w.classList.contains('min');
@@ -569,18 +528,13 @@
             setMinState(isMin);
         };
 
-        // Header click also toggles minimize (only if not dragging)
         w.querySelector('#cw-hd').addEventListener('click', (e) => {
             if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
-            // Only toggle if this was a clean click (no drag happened)
-            // The drag handler uses preventDefault on mousedown, but click still fires
-            // We use a small delay check — if the mouseup happened without hasMoved, this is a real click
             const isMin = !w.classList.contains('min');
             applyMinState(isMin);
             setMinState(isMin);
         });
 
-        // Pop-out button
         w.querySelector('#cw-pop').onclick = e => { e.stopPropagation(); popOut(); };
 
         window.addEventListener('resize', applyZoom);
@@ -595,34 +549,59 @@
     }
 
     // ============================================
-    // POP-OUT
+    // POP-OUT (Reworked — proper sizing, no duplicates)
     // ============================================
     function popOut() {
-        const pw = 460, ph = 550;
+        // Close any existing pop-out first
+        if (popWin && !popWin.closed) {
+            popWin.close();
+            popWin = null;
+        }
+        if (popUpdateInterval) {
+            clearInterval(popUpdateInterval);
+            popUpdateInterval = null;
+        }
+
+        // Open with generous initial size
+        const pw = 470, ph = 650;
         const l = Math.round((screen.width - pw) / 2);
         const t = Math.round((screen.height - ph) / 2);
 
-        popWin = window.open('', 'CPT_W', `width=${pw},height=${ph},top=${t},left=${l},resizable=no,scrollbars=no,menubar=no,toolbar=no,location=no,status=no`);
-        if (!popWin) { alert('Pop-up blocked!'); return; }
+        popWin = window.open('about:blank', 'CPT_Widget_Pop', `width=${pw},height=${ph},top=${t},left=${l},scrollbars=yes,menubar=no,toolbar=no,location=no,status=no`);
+        if (!popWin) { alert('Pop-up blocked! Allow pop-ups for this site.'); return; }
 
-        popWin.document.write(`<!DOCTYPE html><html><head><title>outbound dock :3</title><style>
-            *{box-sizing:border-box}html,body{margin:0;padding:0;overflow:hidden}
-            .cw{padding-top:30px}${BASE_CSS}
-            .cw-si{flex:1;min-width:60px}
-        </style></head><body><div class="cw" id="cpt-w">${buildHTML(true)}</div></body></html>`);
+        // Write fresh document
+        popWin.document.open();
+        popWin.document.write(buildPopoutHTML());
         popWin.document.close();
 
-        popWin.document.getElementById('cw-dock').onclick = dock;
+        // Wire up dock button
+        popWin.document.getElementById('cw-dock').addEventListener('click', () => { dock(); });
 
+        // Monitor for close
         const chk = setInterval(() => {
-            if (popWin && popWin.closed) { clearInterval(chk); popWin = null; showInline(); }
+            if (!popWin || popWin.closed) {
+                clearInterval(chk);
+                if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
+                popWin = null;
+                showInline();
+            }
         }, 500);
 
+        // Hide inline widget
         hideInline();
+
+        // Render current data into pop-out
         update();
+
+        // Set up independent render loop for pop-out
+        popUpdateInterval = setInterval(() => {
+            if (popWin && !popWin.closed) renderToDoc(popWin.document);
+        }, CFG.refresh);
     }
 
     function dock() {
+        if (popUpdateInterval) { clearInterval(popUpdateInterval); popUpdateInterval = null; }
         if (popWin && !popWin.closed) popWin.close();
         popWin = null;
         showInline();
@@ -632,11 +611,6 @@
     function hideInline() { const w = document.getElementById('cpt-w'); if (w) w.style.display = 'none'; }
     function showInline() { const w = document.getElementById('cpt-w'); if (w) w.style.display = ''; }
 
-    function getDoc() {
-        if (popWin && !popWin.closed) return popWin.document;
-        return document;
-    }
-
     // ============================================
     // GM_XMLHTTPREQUEST FETCHER
     // ============================================
@@ -645,27 +619,16 @@
             method: 'GET',
             url: CFG.url,
             timeout: CFG.fetchTimeout,
-            headers: {
-                'Accept': 'text/html,application/xhtml+xml',
-                'Cache-Control': 'no-cache'
-            },
+            headers: { 'Accept': 'text/html,application/xhtml+xml', 'Cache-Control': 'no-cache' },
             onload: function(response) {
                 if (response.status === 200) {
-                    const html = response.responseText;
-                    const parsed = parseHTMLResponse(html);
-
+                    const parsed = parseHTMLResponse(response.responseText);
                     if (parsed && parsed.allCpts.length > 0) {
-                        fetchMode = 'fetch';
-                        fetchFailCount = 0;
+                        fetchMode = 'fetch'; fetchFailCount = 0;
                         GM_setValue('cpt_widget_data', JSON.stringify(parsed));
-                    } else {
-                        handleFetchEmpty();
-                    }
-                } else if (response.status === 401 || response.status === 403) {
-                    handleFetchAuthError();
-                } else {
-                    handleFetchError(response.status);
-                }
+                    } else { handleFetchEmpty(); }
+                } else if (response.status === 401 || response.status === 403) { handleFetchAuthError(); }
+                else { handleFetchError(response.status); }
             },
             onerror: function() { handleFetchError('network'); },
             ontimeout: function() { handleFetchError('timeout'); }
@@ -676,89 +639,62 @@
         try {
             const parser = new DOMParser();
             const doc = parser.parseFromString(html, 'text/html');
-
             const tbl = doc.querySelector('#cptsLoadInProgress');
             if (!tbl) return null;
-
             const rows = tbl.querySelectorAll('tbody tr');
             if (!rows.length) return null;
-
             if (rows.length === 1) {
                 const text = rows[0].textContent.toLowerCase();
-                if (text.includes('loading') || text.includes('no data') || text.trim() === '') {
-                    return null;
-                }
+                if (text.includes('loading') || text.includes('no data') || text.trim() === '') return null;
             }
-
             if (rows[0].cells && rows[0].cells.length < 22) return null;
-
             return parseRows(rows);
-        } catch (e) {
-            return null;
+        } catch (e) { return null; }
+    }
+
+    function handleFetchEmpty() { fetchFailCount++; if (fetchFailCount >= 3) { fetchMode = 'tab'; showFallback('tab'); } }
+    function handleFetchAuthError() { fetchFailCount++; fetchMode = 'tab'; showFallback('auth'); }
+    function handleFetchError() { fetchFailCount++; if (fetchFailCount >= 3) { fetchMode = 'tab'; showFallback('tab'); } }
+
+    function showFallback(type) {
+        const msg = type === 'auth'
+            ? `\u26A0\uFE0F session expired \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> to re-authenticate`
+            : `\u26A0\uFE0F direct fetch unavailable \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> in any tab to auto-sync`;
+
+        // Show in inline widget
+        const warn = document.getElementById('cw-warn');
+        if (warn) warn.innerHTML = `<div class="cw-warn">${msg}</div>`;
+
+        // Show in pop-out if open
+        if (popWin && !popWin.closed) {
+            const pw = popWin.document.getElementById('cw-warn');
+            if (pw) pw.innerHTML = `<div class="cw-warn">${msg}</div>`;
         }
     }
 
-    function handleFetchEmpty() {
-        fetchFailCount++;
-        if (fetchFailCount >= 3) { fetchMode = 'tab'; showTabFallback(); }
-    }
-
-    function handleFetchAuthError() {
-        fetchFailCount++;
-        fetchMode = 'tab';
-        showAuthFallback();
-    }
-
-    function handleFetchError(reason) {
-        fetchFailCount++;
-        if (fetchFailCount >= 3) { fetchMode = 'tab'; showTabFallback(); }
-    }
-
-    function showTabFallback() {
-        const d = getDoc();
-        const warn = d.getElementById('cw-warn');
-        if (warn) {
-            warn.innerHTML = `<div class="cw-warn">\u26A0\uFE0F direct fetch unavailable \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> in any tab to auto-sync</div>`;
-        }
-    }
-
-    function showAuthFallback() {
-        const d = getDoc();
-        const warn = d.getElementById('cw-warn');
-        if (warn) {
-            warn.innerHTML = `<div class="cw-warn">\u26A0\uFE0F session expired \u2014 <a href="${CFG.url}" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> to re-authenticate</div>`;
-        }
-    }
-
-    function scrapeLoop() {
-        if (fetchMode === 'fetch') fetchCPTData();
-    }
+    function scrapeLoop() { if (fetchMode === 'fetch') fetchCPTData(); }
 
     // ============================================
     // CRITICAL ALERT
     // ============================================
     function getCriticalAlerts(data) {
         const alerts = [];
-        const { staged } = data;
-
-        for (let i = 0; i < staged.length; i++) {
-            const s = staged[i];
+        for (let i = 0; i < data.staged.length; i++) {
+            const s = data.staged[i];
             const mins = tlMin(s.timeLeft);
             if (s.pkgs >= CFG.alertStagedThreshold && mins <= CFG.alertMinutesThreshold) {
                 alerts.push({ lane: s.lane, pkgs: s.pkgs, timeLeft: s.timeLeft, minutes: mins });
             }
         }
-
         alerts.sort((a, b) => a.minutes - b.minutes);
         return alerts;
     }
 
-    function renderAlerts(alerts, doc) {
+    function renderAlertsTo(alerts, doc) {
         const alertEl = doc.getElementById('cw-alert');
         if (alertEl) {
-            if (!alerts.length) {
-                alertEl.innerHTML = '';
-            } else {
+            if (!alerts.length) { alertEl.innerHTML = ''; }
+            else {
                 let h = '<div class="cw-alert"><div class="cw-alert-title">\u26A0 critical \u2014 staged freight at risk</div>';
                 for (let i = 0; i < alerts.length; i++) {
                     const a = alerts[i];
@@ -768,29 +704,30 @@
                 alertEl.innerHTML = h;
             }
         }
+    }
 
+    function renderMiniAlerts(alerts) {
         const miniAlert = document.getElementById('cw-mini-alert');
-        if (miniAlert) {
-            if (!alerts.length) {
-                miniAlert.innerHTML = '';
-            } else {
-                let h = '<div class="cw-mini-alert">\u26A0 ';
-                for (let i = 0; i < alerts.length; i++) {
-                    const a = alerts[i];
-                    h += `${a.lane} (${a.pkgs}pkg/${a.timeLeft})`;
-                    if (i < alerts.length - 1) h += ' \xB7 ';
-                }
-                h += '</div>';
-                miniAlert.innerHTML = h;
-            }
+        if (!miniAlert) return;
+        if (!alerts.length) { miniAlert.innerHTML = ''; return; }
+        let h = '<div class="cw-mini-alert">\u26A0 ';
+        for (let i = 0; i < alerts.length; i++) {
+            h += `${alerts[i].lane} (${alerts[i].pkgs}pkg/${alerts[i].timeLeft})`;
+            if (i < alerts.length - 1) h += ' \xB7 ';
         }
+        h += '</div>';
+        miniAlert.innerHTML = h;
     }
 
     // ============================================
-    // RENDER
+    // RENDER — targets a specific document
     // ============================================
-    function render(data) {
-        const d = getDoc();
+    function renderToDoc(d) {
+        const raw = GM_getValue('cpt_widget_data', null);
+        if (!raw) return;
+        let data;
+        try { data = JSON.parse(raw); } catch(e) { return; }
+
         const { staged, loading, loaded, allCpts, timestamp } = data;
         const late = allCpts.reduce((c, i) => c + (isLate(i.timeLeft) ? 1 : 0), 0);
 
@@ -801,16 +738,8 @@
         d.getElementById('cd').textContent = loaded.length;
         d.getElementById('ct').textContent = late;
 
-        const ms = document.getElementById('ms');
-        if (ms) {
-            ms.textContent = staged.length;
-            document.getElementById('ml').textContent = loading.length;
-            document.getElementById('md').textContent = loaded.length;
-            document.getElementById('mt').textContent = late;
-        }
-
         const alerts = getCriticalAlerts(data);
-        renderAlerts(alerts, d);
+        renderAlertsTo(alerts, d);
 
         const warn = d.getElementById('cw-warn');
         if (warn && fetchMode === 'fetch') {
@@ -821,47 +750,50 @@
         const now = new Date();
         const ts = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-        const mu = document.getElementById('mu');
-        if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
-
         // Staged table
         const tbS = d.getElementById('tb-s');
-        if (!staged.length) {
-            tbS.innerHTML = '<tr><td colspan="5" style="color:#888">no freight staged</td></tr>';
-        } else {
-            let h = '';
-            for (let i = 0; i < staged.length; i++) {
-                const s = staged[i];
-                h += `<tr><td>${s.lane}</td><td>${s.pkgs}${s.containers > 0 ? ' (+' + s.containers + 'C)' : ''}</td><td class="s-con">${s.containerizedPkgs || 0}</td><td>${s.cpt}</td><td class="${isUrg(s.timeLeft) ? 's-lat' : ''}">${s.timeLeft}</td></tr>`;
+        if (tbS) {
+            if (!staged.length) {
+                tbS.innerHTML = '<tr><td colspan="5" style="color:#888">no freight staged</td></tr>';
+            } else {
+                let h = '';
+                for (let i = 0; i < staged.length; i++) {
+                    const s = staged[i];
+                    h += `<tr><td>${s.lane}</td><td>${s.pkgs}${s.containers > 0 ? ' (+' + s.containers + 'C)' : ''}</td><td class="s-con">${s.containerizedPkgs || 0}</td><td>${s.cpt}</td><td class="${isUrg(s.timeLeft) ? 's-lat' : ''}">${s.timeLeft}</td></tr>`;
+                }
+                tbS.innerHTML = h;
             }
-            tbS.innerHTML = h;
         }
 
         // Loading table
         const tbL = d.getElementById('tb-l');
-        if (!loading.length) {
-            tbL.innerHTML = '<tr><td colspan="5" style="color:#888">no active loads</td></tr>';
-        } else {
-            let h = '';
-            for (let i = 0; i < loading.length; i++) {
-                const l = loading[i];
-                h += `<tr><td>${l.lane}</td><td>${l.loadedPkgs} / ${l.totalPkgs}</td><td class="s-con">${l.containerizedPkgs || 0}</td><td>${l.cpt}</td><td class="${isUrg(l.timeLeft) ? 's-lat' : ''}">${l.timeLeft}</td></tr>`;
+        if (tbL) {
+            if (!loading.length) {
+                tbL.innerHTML = '<tr><td colspan="5" style="color:#888">no active loads</td></tr>';
+            } else {
+                let h = '';
+                for (let i = 0; i < loading.length; i++) {
+                    const l = loading[i];
+                    h += `<tr><td>${l.lane}</td><td>${l.loadedPkgs} / ${l.totalPkgs}</td><td class="s-con">${l.containerizedPkgs || 0}</td><td>${l.cpt}</td><td class="${isUrg(l.timeLeft) ? 's-lat' : ''}">${l.timeLeft}</td></tr>`;
+                }
+                tbL.innerHTML = h;
             }
-            tbL.innerHTML = h;
         }
 
         // All CPTs table
         const tbA = d.getElementById('tb-a');
-        if (!allCpts.length) {
-            tbA.innerHTML = '<tr><td colspan="6" style="color:#888">no data</td></tr>';
-        } else {
-            allCpts.sort((a, b) => tlMin(a.timeLeft) - tlMin(b.timeLeft));
-            let h = '';
-            for (let i = 0; i < allCpts.length; i++) {
-                const c = allCpts[i];
-                h += `<tr><td>${c.lane}</td><td>${c.totalPkgs}</td><td>${c.inFacilityPkgs}</td><td class="s-con">${c.containerizedPkgs || 0}</td><td>${c.cpt}</td><td class="${isUrg(c.timeLeft) ? 's-lat' : ''}">${c.timeLeft}</td></tr>`;
+        if (tbA) {
+            if (!allCpts.length) {
+                tbA.innerHTML = '<tr><td colspan="6" style="color:#888">no data</td></tr>';
+            } else {
+                allCpts.sort((a, b) => tlMin(a.timeLeft) - tlMin(b.timeLeft));
+                let h = '';
+                for (let i = 0; i < allCpts.length; i++) {
+                    const c = allCpts[i];
+                    h += `<tr><td>${c.lane}</td><td>${c.totalPkgs}</td><td>${c.inFacilityPkgs}</td><td class="s-con">${c.containerizedPkgs || 0}</td><td>${c.cpt}</td><td class="${isUrg(c.timeLeft) ? 's-lat' : ''}">${c.timeLeft}</td></tr>`;
+                }
+                tbA.innerHTML = h;
             }
-            tbA.innerHTML = h;
         }
 
         const st = d.getElementById('cw-st');
@@ -869,28 +801,46 @@
 
         const src = d.getElementById('cw-src');
         if (src) src.textContent = fetchMode === 'fetch' ? 'source: direct fetch' : 'source: cpt view tab';
-
-        if (popWin && !popWin.closed) {
-            const wEl = popWin.document.getElementById('cpt-w');
-            if (wEl) {
-                const ch = popWin.outerHeight - popWin.innerHeight;
-                const cw2 = popWin.outerWidth - popWin.innerWidth;
-                popWin.resizeTo(460 + cw2, wEl.scrollHeight + ch);
-            }
-        }
     }
 
     // ============================================
-    // MAIN LOOP
+    // UPDATE — renders to inline + pop-out
     // ============================================
     function update() {
         const raw = GM_getValue('cpt_widget_data', null);
         if (!raw) {
-            const st = getDoc().getElementById('cw-st');
+            const st = document.getElementById('cw-st');
             if (st) st.innerHTML = '<span style="color:#f39c12">\u25CF fetching...</span>';
             return;
         }
-        try { render(JSON.parse(raw)); } catch (e) {}
+
+        let data;
+        try { data = JSON.parse(raw); } catch(e) { return; }
+
+        // Render to inline widget
+        renderToDoc(document);
+
+        // Update minimized summary (only on inline widget)
+        const ms = document.getElementById('ms');
+        if (ms) {
+            ms.textContent = data.staged.length;
+            document.getElementById('ml').textContent = data.loading.length;
+            document.getElementById('md').textContent = data.loaded.length;
+            document.getElementById('mt').textContent = data.allCpts.reduce((c, i) => c + (isLate(i.timeLeft) ? 1 : 0), 0);
+        }
+
+        const now = new Date();
+        const ts = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const mu = document.getElementById('mu');
+        if (mu) mu.innerHTML = `<span class="cw-pulse"></span>updated ${ts}`;
+
+        // Mini alerts
+        renderMiniAlerts(getCriticalAlerts(data));
+
+        // Also render to pop-out if open
+        if (popWin && !popWin.closed) {
+            renderToDoc(popWin.document);
+        }
     }
 
     // ============================================
