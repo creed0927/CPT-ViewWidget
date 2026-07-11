@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.7.1
-// @description  Memory-optimized CPT widget — scrollable body, minimize properly collapses
+// @version      4.7.2
+// @description  Memory-optimized CPT widget — pop-out heartbeat fix
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -77,6 +77,21 @@
     }
 
     // ============================================
+    // ORPHAN DETECTION — reset stuck pop-out flag
+    // ============================================
+    function checkOrphanedPopOut() {
+        if (GM_getValue('cpt_widget_popped', false)) {
+            var lastBeat = GM_getValue('cpt_widget_pop_heartbeat', 0);
+            // If heartbeat is older than 5 seconds, pop-out is dead
+            if (Date.now() - lastBeat > 5000) {
+                GM_setValue('cpt_widget_popped', false);
+            }
+        }
+    }
+    // Run immediately on script load
+    checkOrphanedPopOut();
+
+    // ============================================
     // MODE 1: CPT VIEW SCRAPER
     // ============================================
     if (window.location.href.indexOf('trans-logistics.amazon.com/ssp/dock') !== -1) {
@@ -144,7 +159,6 @@
     // ============================================
     var popWin = null, popI = null, fMode = 'fetch', fFail = 0;
 
-    // CSS — minimize collapses widget to just header + mini bar
     GM_addStyle('#cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale('+SCALE+');transform-origin:bottom right;display:flex;flex-direction:column}#cpt-w.min{max-height:none;height:auto}#cpt-w.min .cb{display:none}#cpt-w.min .mv{display:flex}.mv{display:none}.cw{font:13px "Segoe UI",sans-serif;color:#000;background:#FFADDB;display:flex;flex-direction:column;height:100%}.ch{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none;flex-shrink:0}.ch h3{margin:0;font-size:14px;color:#FFF}.cs{font-size:11px;color:#FFF}.cb{padding:10px 15px;overflow-y:auto;flex:1;min-height:0}.sec{margin-bottom:12px}.st{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}.cw table{width:100%;border-collapse:collapse;font-size:12px}.cw th{text-align:left;padding:4px 6px;background:#C99DC7;color:#FFF;font-weight:normal;font-size:11px}.cw td{padding:4px 6px;border-bottom:1px solid #D9D9FF}.cw tr:hover{background:#D9D9FF}.sm{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}.si{background:#FFF;padding:6px 12px;border-radius:6px;text-align:center}.si .n{font-size:18px;font-weight:bold;display:block}.si .lb{font-size:10px;color:#888;text-transform:lowercase}.bt{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}.bt:hover{color:#000}.ss{color:#f39c12;font-weight:bold}.sl{color:#3498db;font-weight:bold}.sd{color:#27ae60;font-weight:bold}.sr{color:#e74c3c;font-weight:bold}.sc{color:#9b59b6;font-weight:bold}.pl{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:p 2s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}.wn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}.mv{gap:12px;align-items:center;flex-wrap:wrap;padding:8px 15px;font-size:12px}.mi{display:flex;align-items:center;gap:4px}.mi .mn{font-weight:bold;font-size:14px}.mi .ml{font-size:11px;color:#555;text-transform:lowercase}.mu{font-size:10px;color:#555;margin-left:auto}.src{font-size:9px;color:#888;text-align:center;margin-top:6px}.al{background:#e74c3c;color:#FFF;padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:11px;animation:f 1s infinite}.ali{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.2)}.ali:last-child{border-bottom:none}.alt{font-weight:bold;font-size:12px;margin-bottom:4px}.aln{font-weight:bold}.ald{font-size:10px;opacity:.9}@keyframes f{0%,100%{opacity:1}50%{opacity:.85}}.mal{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:f 1s infinite}.snp{transition:top .25s,left .25s,right .25s,bottom .25s}');
 
     // HTML
@@ -189,7 +203,7 @@
         w.style.transformOrigin=c.replace('-',' ');
     }
 
-    // Minimize — properly collapses
+    // Minimize
     function aMin(v) {
         var w = document.getElementById('cpt-w'); if (!w) return;
         var b = w.querySelector('#bm');
@@ -213,6 +227,8 @@
         w.id='cpt-w'; w.className='cw'; w.innerHTML=IHTML;
         document.body.appendChild(w);
         aPos(w); aZoom(); aMin(GM_getValue('cpt_widget_minimized',false)); initDrag(w);
+
+        // Check popped state — already validated by checkOrphanedPopOut() above
         if (GM_getValue('cpt_widget_popped',false)) w.style.display='none';
 
         w.querySelector('#bm').onclick=function(e){e.stopPropagation();var m=!w.classList.contains('min');aMin(m);GM_setValue('cpt_widget_minimized',m);};
@@ -235,17 +251,37 @@
         popWin.document.close();
         popWin.document.getElementById('dk').onclick=dock;
         GM_setValue('cpt_widget_popped',true);
+        GM_setValue('cpt_widget_pop_heartbeat', Date.now());
         var iw=document.getElementById('cpt-w');if(iw) iw.style.display='none';
 
+        // Monitor pop-out — write heartbeat so other tabs know it's alive
         var chk=setInterval(function(){
-            if(!popWin||popWin.closed){clearInterval(chk);if(popI){clearInterval(popI);popI=null;}popWin=null;GM_setValue('cpt_widget_popped',false);var w2=document.getElementById('cpt-w');if(w2) w2.style.display='';}
-        },500);
+            if(!popWin||popWin.closed){
+                clearInterval(chk);
+                if(popI){clearInterval(popI);popI=null;}
+                popWin=null;
+                GM_setValue('cpt_widget_popped',false);
+                GM_setValue('cpt_widget_pop_heartbeat', 0);
+                var w2=document.getElementById('cpt-w');if(w2) w2.style.display='';
+            } else {
+                // Pop-out still alive — update heartbeat
+                GM_setValue('cpt_widget_pop_heartbeat', Date.now());
+            }
+        },2000);
 
         rend(popWin.document);
         popI=setInterval(function(){if(popWin&&!popWin.closed) rend(popWin.document); else{clearInterval(popI);popI=null;}},REFRESH);
     }
 
-    function dock(){if(popI){clearInterval(popI);popI=null;}if(popWin&&!popWin.closed) popWin.close();popWin=null;GM_setValue('cpt_widget_popped',false);var w=document.getElementById('cpt-w');if(w) w.style.display='';upd();}
+    function dock(){
+        if(popI){clearInterval(popI);popI=null;}
+        if(popWin&&!popWin.closed) popWin.close();
+        popWin=null;
+        GM_setValue('cpt_widget_popped',false);
+        GM_setValue('cpt_widget_pop_heartbeat', 0);
+        var w=document.getElementById('cpt-w');if(w) w.style.display='';
+        upd();
+    }
 
     // Fetch
     function fetch2() {
