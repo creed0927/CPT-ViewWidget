@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.7
-// @description  Memory-optimized CPT widget — scrollable body, minimal allocations
+// @version      4.7.1
+// @description  Memory-optimized CPT widget — scrollable body, minimize properly collapses
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -33,13 +33,9 @@
         DATA_REFRESH = 60000,
         SNAP_M = 10;
 
-    // Pre-compiled regex
     var RH = /(\d+)\s*hr/, RM = /(\d+)\s*min/, RN = /(\d+)/;
-
-    // Shared buffer
     var B = '';
 
-    // Utils
     function tm(t) {
         if (!t) return 99999;
         var h = RH.exec(t), m = RM.exec(t);
@@ -59,7 +55,6 @@
         return m ? +m[1] : 0;
     }
 
-    // Parser — single pass
     function parse(rows) {
         var st = [], ld = [], dd = [], all = [], i = 0, len = rows.length;
         for (; i < len; i++) {
@@ -149,10 +144,10 @@
     // ============================================
     var popWin = null, popI = null, fMode = 'fetch', fFail = 0;
 
-    // Minified CSS — single allocation
-    GM_addStyle('#cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale('+SCALE+');transform-origin:bottom right;display:flex;flex-direction:column}#cpt-w.min .cb{display:none}#cpt-w.min .mv{display:flex}.mv{display:none}.cw{font:13px "Segoe UI",sans-serif;color:#000;background:#FFADDB;height:100%;display:flex;flex-direction:column}.ch{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none;flex-shrink:0}.ch h3{margin:0;font-size:14px;color:#FFF}.cs{font-size:11px;color:#FFF}.cb{padding:10px 15px;overflow-y:auto;flex:1;min-height:0}.sec{margin-bottom:12px}.st{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}.cw table{width:100%;border-collapse:collapse;font-size:12px}.cw th{text-align:left;padding:4px 6px;background:#C99DC7;color:#FFF;font-weight:normal;font-size:11px}.cw td{padding:4px 6px;border-bottom:1px solid #D9D9FF}.cw tr:hover{background:#D9D9FF}.sm{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}.si{background:#FFF;padding:6px 12px;border-radius:6px;text-align:center}.si .n{font-size:18px;font-weight:bold;display:block}.si .lb{font-size:10px;color:#888;text-transform:lowercase}.bt{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}.bt:hover{color:#000}.ss{color:#f39c12;font-weight:bold}.sl{color:#3498db;font-weight:bold}.sd{color:#27ae60;font-weight:bold}.sr{color:#e74c3c;font-weight:bold}.sc{color:#9b59b6;font-weight:bold}.pl{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:p 2s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}.wn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}.mv{gap:12px;align-items:center;flex-wrap:wrap;padding:8px 15px;font-size:12px}.mi{display:flex;align-items:center;gap:4px}.mi .mn{font-weight:bold;font-size:14px}.mi .ml{font-size:11px;color:#555;text-transform:lowercase}.mu{font-size:10px;color:#555;margin-top:4px}.src{font-size:9px;color:#888;text-align:center;margin-top:6px}.al{background:#e74c3c;color:#FFF;padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:11px;animation:f 1s infinite}.ali{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.2)}.ali:last-child{border-bottom:none}.alt{font-weight:bold;font-size:12px;margin-bottom:4px}.aln{font-weight:bold}.ald{font-size:10px;opacity:.9}@keyframes f{0%,100%{opacity:1}50%{opacity:.85}}.mal{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:f 1s infinite}.snp{transition:top .25s,left .25s,right .25s,bottom .25s}');
+    // CSS — minimize collapses widget to just header + mini bar
+    GM_addStyle('#cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale('+SCALE+');transform-origin:bottom right;display:flex;flex-direction:column}#cpt-w.min{max-height:none;height:auto}#cpt-w.min .cb{display:none}#cpt-w.min .mv{display:flex}.mv{display:none}.cw{font:13px "Segoe UI",sans-serif;color:#000;background:#FFADDB;display:flex;flex-direction:column;height:100%}.ch{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none;flex-shrink:0}.ch h3{margin:0;font-size:14px;color:#FFF}.cs{font-size:11px;color:#FFF}.cb{padding:10px 15px;overflow-y:auto;flex:1;min-height:0}.sec{margin-bottom:12px}.st{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}.cw table{width:100%;border-collapse:collapse;font-size:12px}.cw th{text-align:left;padding:4px 6px;background:#C99DC7;color:#FFF;font-weight:normal;font-size:11px}.cw td{padding:4px 6px;border-bottom:1px solid #D9D9FF}.cw tr:hover{background:#D9D9FF}.sm{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}.si{background:#FFF;padding:6px 12px;border-radius:6px;text-align:center}.si .n{font-size:18px;font-weight:bold;display:block}.si .lb{font-size:10px;color:#888;text-transform:lowercase}.bt{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}.bt:hover{color:#000}.ss{color:#f39c12;font-weight:bold}.sl{color:#3498db;font-weight:bold}.sd{color:#27ae60;font-weight:bold}.sr{color:#e74c3c;font-weight:bold}.sc{color:#9b59b6;font-weight:bold}.pl{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:p 2s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}.wn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}.mv{gap:12px;align-items:center;flex-wrap:wrap;padding:8px 15px;font-size:12px}.mi{display:flex;align-items:center;gap:4px}.mi .mn{font-weight:bold;font-size:14px}.mi .ml{font-size:11px;color:#555;text-transform:lowercase}.mu{font-size:10px;color:#555;margin-left:auto}.src{font-size:9px;color:#888;text-align:center;margin-top:6px}.al{background:#e74c3c;color:#FFF;padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:11px;animation:f 1s infinite}.ali{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.2)}.ali:last-child{border-bottom:none}.alt{font-weight:bold;font-size:12px;margin-bottom:4px}.aln{font-weight:bold}.ald{font-size:10px;opacity:.9}@keyframes f{0%,100%{opacity:1}50%{opacity:.85}}.mal{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:f 1s infinite}.snp{transition:top .25s,left .25s,right .25s,bottom .25s}');
 
-    // HTML templates
+    // HTML
     var TBL = '<div id="wa"></div><div id="ww"></div><div class="sm"><div class="si"><span class="n" id="cs">-</span><span class="lb">staged</span></div><div class="si"><span class="n" id="cl">-</span><span class="lb">loading</span></div><div class="si"><span class="n" id="cd">-</span><span class="lb">loaded</span></div><div class="si"><span class="n sr" id="ct">-</span><span class="lb">late</span></div></div><div class="sec"><div class="st">currently staged on floor</div><table><thead><tr><th>lane</th><th>pkgs</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="ts"><tr><td colspan="5">fetching data...</td></tr></tbody></table></div><div class="sec"><div class="st">loading into trucks</div><table><thead><tr><th>lane</th><th>loaded</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="tl"><tr><td colspan="5">fetching data...</td></tr></tbody></table></div><div class="sec"><div class="st">all active cpts</div><table><thead><tr><th>lane</th><th>total</th><th>in fac</th><th>cont.</th><th>cpt</th><th>time left</th></tr></thead><tbody id="ta"><tr><td colspan="6">fetching data...</td></tr></tbody></table></div><div class="src" id="src"></div>';
 
     var IHTML = '<div class="ch" id="ch"><h3>outbound dock :3 - live</h3><div><span class="cs" id="cst">starting up...</span><button class="bt" id="bp" title="pop out">\u29C9</button><button class="bt" id="bm">\u2014</button></div></div><div class="mv" id="mv"><div class="mi"><span class="mn ss" id="ms">-</span><span class="ml">staged</span></div><div class="mi"><span class="mn sl" id="ml">-</span><span class="ml">loading</span></div><div class="mi"><span class="mn sd" id="md">-</span><span class="ml">loaded</span></div><div class="mi"><span class="mn sr" id="mt">-</span><span class="ml">late</span></div><div class="mu" id="mu">\u2014</div><div id="ma"></div></div><div class="cb" id="cb">' + TBL + '</div>';
@@ -172,10 +167,10 @@
             if (!moved) { if (dx*dx+dy*dy < 16) return; moved = true; w.classList.remove('snp'); w.style.right='auto'; w.style.bottom='auto'; w.style.left=sl+'px'; w.style.top=st2+'px'; }
             w.style.left = (sl+dx)+'px'; w.style.top = (st2+dy)+'px';
         });
-        document.addEventListener('mouseup', function() { if (!drag) return; drag = false; if (moved) snp(w); });
+        document.addEventListener('mouseup', function() { if (!drag) return; drag = false; if (moved) snpW(w); });
     }
 
-    function snp(w) {
+    function snpW(w) {
         var r = w.getBoundingClientRect(), vw = innerWidth, vh = innerHeight;
         var isR = (r.left+r.width/2) > vw/2, isB = (r.top+r.height/2) > vh/2;
         w.classList.add('snp'); w.style.top=''; w.style.bottom=''; w.style.left=''; w.style.right='';
@@ -194,7 +189,7 @@
         w.style.transformOrigin=c.replace('-',' ');
     }
 
-    // Minimize
+    // Minimize — properly collapses
     function aMin(v) {
         var w = document.getElementById('cpt-w'); if (!w) return;
         var b = w.querySelector('#bm');
@@ -212,7 +207,7 @@
         if (popWin&&!popWin.closed){var p=popWin.document.getElementById('ww');if(p&&p.innerHTML) p.innerHTML='';}
     }
 
-    // Create widget
+    // Create
     function create() {
         var w = document.createElement('div');
         w.id='cpt-w'; w.className='cw'; w.innerHTML=IHTML;
@@ -256,9 +251,9 @@
     function fetch2() {
         GM_xmlhttpRequest({method:'GET',url:URL,timeout:TIMEOUT,headers:{'Accept':'text/html','Cache-Control':'no-cache'},
             onload:function(r){
-                if(r.status===200){var d=pHTML(r.responseText);if(d&&d.a.length){fMode='fetch';fFail=0;cWarn();GM_setValue('cpt_widget_data',JSON.stringify(d));}else fail();}
-                else if(r.status===401||r.status===403) fail(1); else fail();
-            },onerror:fail,ontimeout:fail});
+                if(r.status===200){var d=pHTML(r.responseText);if(d&&d.a.length){fMode='fetch';fFail=0;cWarn();GM_setValue('cpt_widget_data',JSON.stringify(d));}else onFail();}
+                else if(r.status===401||r.status===403) onFail(1); else onFail();
+            },onerror:onFail,ontimeout:onFail});
     }
 
     function pHTML(h) {
@@ -272,7 +267,7 @@
         }catch(e){return null;}
     }
 
-    function fail(auth) {
+    function onFail(auth) {
         fFail++;
         if(fFail>=3&&!GM_getValue('cpt_view_open',false)){
             fMode='tab';
@@ -303,38 +298,33 @@
         d.getElementById('cd').textContent=loaded.length;
         d.getElementById('ct').textContent=lt;
 
-        // Alerts
         var alerts=gAlerts(staged),ae=d.getElementById('wa');
         if(ae){
             if(!alerts.length){if(ae.innerHTML) ae.innerHTML='';}
             else{B='<div class="al"><div class="alt">\u26A0 critical \u2014 staged freight at risk</div>';for(i=0;i<alerts.length;i++) B+='<div class="ali"><span class="aln">'+alerts[i].l+'</span><span class="ald">'+alerts[i].p+' pkgs \xB7 '+alerts[i].t+' left</span></div>';B+='</div>';ae.innerHTML=B;}
         }
 
-        // Data age
         var wn=d.getElementById('ww');
         if(wn&&fMode==='fetch'){var age=(Date.now()-tst)/60000|0;if(age>2) wn.innerHTML='<div class="wn">\u26A0\uFE0F data is '+age+' min old</div>';else if(wn.innerHTML) wn.innerHTML='';}
 
         var now=new Date(),ts2=now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
-        // Staged
         var tbS=d.getElementById('ts');
         if(tbS){
             if(!staged.length) tbS.innerHTML='<tr><td colspan="5" style="color:#888">no freight staged</td></tr>';
-            else{B='';for(i=0;i<staged.length;i++){var s=staged[i];B+='<tr><td>'+s.l+'</td><td>'+s.p+(s.cn>0?' (+'+s.cn+'C)':'')+'</td><td class="sc">'+(s.cp||0)+'</td><td>'+s.c+'</td><td'+(urg(s.t)?' class="sr"':'')+ '>'+s.t+'</td></tr>';}tbS.innerHTML=B;}
+            else{B='';for(i=0;i<staged.length;i++){var s=staged[i];B+='<tr><td>'+s.l+'</td><td>'+s.p+(s.cn>0?' (+'+s.cn+'C)':'')+'</td><td class="sc">'+(s.cp||0)+'</td><td>'+s.c+'</td><td'+(urg(s.t)?' class="sr"':'')+'>'+s.t+'</td></tr>';}tbS.innerHTML=B;}
         }
 
-        // Loading
         var tbL=d.getElementById('tl');
         if(tbL){
             if(!loading.length) tbL.innerHTML='<tr><td colspan="5" style="color:#888">no active loads</td></tr>';
-            else{B='';for(i=0;i<loading.length;i++){var g=loading[i];B+='<tr><td>'+g.l+'</td><td>'+g.lp+' / '+g.tp+'</td><td class="sc">'+(g.cp||0)+'</td><td>'+g.c+'</td><td'+(urg(g.t)?' class="sr"':'')+ '>'+g.t+'</td></tr>';}tbL.innerHTML=B;}
+            else{B='';for(i=0;i<loading.length;i++){var g=loading[i];B+='<tr><td>'+g.l+'</td><td>'+g.lp+' / '+g.tp+'</td><td class="sc">'+(g.cp||0)+'</td><td>'+g.c+'</td><td'+(urg(g.t)?' class="sr"':'')+'>'+g.t+'</td></tr>';}tbL.innerHTML=B;}
         }
 
-        // All CPTs
         var tbA=d.getElementById('ta');
         if(tbA){
             if(!all.length) tbA.innerHTML='<tr><td colspan="6" style="color:#888">no data</td></tr>';
-            else{all.sort(function(a,b){return tm(a.t)-tm(b.t);});B='';for(i=0;i<all.length;i++){var c=all[i];B+='<tr><td>'+c.l+'</td><td>'+c.tp+'</td><td>'+c.if+'</td><td class="sc">'+(c.cp||0)+'</td><td>'+c.c+'</td><td'+(urg(c.t)?' class="sr"':'')+ '>'+c.t+'</td></tr>';}tbA.innerHTML=B;}
+            else{all.sort(function(a,b){return tm(a.t)-tm(b.t);});B='';for(i=0;i<all.length;i++){var c=all[i];B+='<tr><td>'+c.l+'</td><td>'+c.tp+'</td><td>'+c.if+'</td><td class="sc">'+(c.cp||0)+'</td><td>'+c.c+'</td><td'+(urg(c.t)?' class="sr"':'')+'>'+c.t+'</td></tr>';}tbA.innerHTML=B;}
         }
 
         var st=d.getElementById('cst');if(st) st.innerHTML='<span class="pl"></span>'+ts2;
@@ -349,16 +339,14 @@
 
         rend(document);
 
-        // Mini
         var ms=document.getElementById('ms');
         if(ms){var lt=0,i=data.a.length;while(i--) if(late(data.a[i].t)) lt++;
             ms.textContent=data.s.length;document.getElementById('ml').textContent=data.g.length;
             document.getElementById('md').textContent=data.d.length;document.getElementById('mt').textContent=lt;
         }
         var mu=document.getElementById('mu');
-        if(mu) mu.innerHTML='<span class="pl"></span>updated '+new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        if(mu) mu.innerHTML='<span class="pl"></span>'+new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
-        // Mini alerts
         var alerts=gAlerts(data.s),ma=document.getElementById('ma');
         if(ma){
             if(!alerts.length){if(ma.innerHTML) ma.innerHTML='';}
