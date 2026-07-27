@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.8
-// @description  Auto-opens CPT View in background tab when no fresh data available
+// @version      4.8.1
+// @description  Auto-opens CPT View — single instance lock prevents duplicates
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -33,7 +33,7 @@
         TIMEOUT = 15000,
         DATA_REFRESH = 60000,
         SNAP_M = 10,
-        STALE_THRESHOLD = 60000; // data older than 60s = stale
+        STALE_THRESHOLD = 60000;
 
     var RH = /(\d+)\s*hr/, RM = /(\d+)\s*min/, RN = /(\d+)/;
     var B = '';
@@ -155,8 +155,7 @@
     // ============================================
     // MODE 2: WIDGET
     // ============================================
-    var popWin = null, popI = null, fMode = 'tab', fFail = 0;
-    var autoTabOpened = false;
+    var popWin = null, popI = null;
 
     GM_addStyle('#cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale('+SCALE+');transform-origin:bottom right;display:flex;flex-direction:column}#cpt-w.min{max-height:none;height:auto}#cpt-w.min .cb{display:none}#cpt-w.min .mv{display:flex}.mv{display:none}.cw{font:13px "Segoe UI",sans-serif;color:#000;background:#FFADDB;display:flex;flex-direction:column;height:100%}.ch{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none;flex-shrink:0}.ch h3{margin:0;font-size:14px;color:#FFF}.cs{font-size:11px;color:#FFF}.cb{padding:10px 15px;overflow-y:auto;flex:1;min-height:0}.sec{margin-bottom:12px}.st{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}.cw table{width:100%;border-collapse:collapse;font-size:12px}.cw th{text-align:left;padding:4px 6px;background:#C99DC7;color:#FFF;font-weight:normal;font-size:11px}.cw td{padding:4px 6px;border-bottom:1px solid #D9D9FF}.cw tr:hover{background:#D9D9FF}.sm{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}.si{background:#FFF;padding:6px 12px;border-radius:6px;text-align:center}.si .n{font-size:18px;font-weight:bold;display:block}.si .lb{font-size:10px;color:#888;text-transform:lowercase}.bt{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}.bt:hover{color:#000}.ss{color:#f39c12;font-weight:bold}.sl{color:#3498db;font-weight:bold}.sd{color:#27ae60;font-weight:bold}.sr{color:#e74c3c;font-weight:bold}.sc{color:#9b59b6;font-weight:bold}.pl{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:p 2s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}.wn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}.mv{gap:12px;align-items:center;flex-wrap:wrap;padding:8px 15px;font-size:12px}.mi{display:flex;align-items:center;gap:4px}.mi .mn{font-weight:bold;font-size:14px}.mi .ml{font-size:11px;color:#555;text-transform:lowercase}.mu{font-size:10px;color:#555;margin-left:auto}.src{font-size:9px;color:#888;text-align:center;margin-top:6px}.al{background:#e74c3c;color:#FFF;padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:11px;animation:f 1s infinite}.ali{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.2)}.ali:last-child{border-bottom:none}.alt{font-weight:bold;font-size:12px;margin-bottom:4px}.aln{font-weight:bold}.ald{font-size:10px;opacity:.9}@keyframes f{0%,100%{opacity:1}50%{opacity:.85}}.mal{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:f 1s infinite}.snp{transition:top .25s,left .25s,right .25s,bottom .25s}');
 
@@ -221,7 +220,7 @@
     }
 
     // ============================================
-    // AUTO-OPEN CPT VIEW IN BACKGROUND
+    // AUTO-OPEN CPT VIEW — SINGLE INSTANCE LOCK
     // ============================================
     function isDataStale() {
         var raw = GM_getValue('cpt_widget_data', null);
@@ -237,42 +236,59 @@
     }
 
     function autoOpenCptView() {
-        // Don't open if CPT View is already open or we already auto-opened
-        if (isCptViewAlive() || autoTabOpened) return;
+        // Don't open if CPT View is already running
+        if (isCptViewAlive()) return;
 
-        // Don't open if data is fresh enough
+        // Don't open if data is fresh
         if (!isDataStale()) return;
 
-        autoTabOpened = true;
-        // Open in background (inactive) tab
-        GM_openInTab(URL, { active: false, insert: true, setParent: true });
-
-        // Show brief notification
-        var w = document.getElementById('ww');
-        if (w) w.innerHTML = '<div class="wn">\u2139\uFE0F auto-opened CPT View in background tab for live data</div>';
-        if (popWin && !popWin.closed) {
-            var p = popWin.document.getElementById('ww');
-            if (p) p.innerHTML = '<div class="wn">\u2139\uFE0F auto-opened CPT View in background tab for live data</div>';
+        // CHECK THE LOCK — has another tab already requested an open?
+        var lockTime = GM_getValue('cpt_auto_open_lock', 0);
+        if (Date.now() - lockTime < 30000) {
+            // Another tab claimed the lock within the last 30 seconds — don't open again
+            return;
         }
 
-        // Clear the notification once data starts flowing
-        var clearCheck = setInterval(function() {
-            if (!isDataStale()) {
-                clearInterval(clearCheck);
-                cWarn();
+        // CLAIM THE LOCK — this tab will open CPT View
+        GM_setValue('cpt_auto_open_lock', Date.now());
+
+        // Small random delay to prevent race condition between tabs loading simultaneously
+        setTimeout(function() {
+            // Double-check lock is still ours (another tab might have overwritten)
+            // and CPT View isn't already open now
+            if (isCptViewAlive()) return;
+
+            GM_openInTab(URL, { active: false, insert: true, setParent: true });
+
+            // Show notification
+            var w = document.getElementById('ww');
+            if (w) w.innerHTML = '<div class="wn">\u2139\uFE0F auto-opened CPT View in background tab</div>';
+            if (popWin && !popWin.closed) {
+                var p = popWin.document.getElementById('ww');
+                if (p) p.innerHTML = '<div class="wn">\u2139\uFE0F auto-opened CPT View in background tab</div>';
             }
-        }, 5000);
+
+            // Clear notification once data flows
+            var clearCheck = setInterval(function() {
+                if (!isDataStale()) {
+                    clearInterval(clearCheck);
+                    cWarn();
+                }
+            }, 5000);
+        }, Math.floor(Math.random() * 2000)); // Random 0-2s delay
     }
 
-    // Periodically check if we need to re-open CPT View
+    // Monitor freshness — re-open if CPT View dies
     function monitorDataFreshness() {
         setInterval(function() {
             if (!isCptViewAlive() && isDataStale()) {
-                // Reset flag so we can re-open if needed
-                autoTabOpened = false;
-                autoOpenCptView();
+                // Release stale lock so we can re-open
+                var lockTime = GM_getValue('cpt_auto_open_lock', 0);
+                if (Date.now() - lockTime > 30000) {
+                    autoOpenCptView();
+                }
             }
-        }, 30000); // Check every 30 seconds
+        }, 30000);
     }
 
     // Create
@@ -410,14 +426,8 @@
     function init(){
         create();
         upd();
-
-        // Auto-open CPT View if no fresh data
         autoOpenCptView();
-
-        // Monitor and re-open if CPT View dies
         monitorDataFreshness();
-
-        // Regular update cycle
         setInterval(upd, REFRESH);
     }
 
