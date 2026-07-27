@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.7.3
-// @description  Memory-optimized CPT widget — debug mode to diagnose fetch issues
+// @version      4.8
+// @description  Auto-opens CPT View in background tab when no fresh data available
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -12,6 +12,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addValueChangeListener
+// @grant        GM_openInTab
 // @connect      trans-logistics.amazon.com
 // @connect      *.amazon.com
 // ==/UserScript==
@@ -20,11 +21,6 @@
     'use strict';
 
     if (window.name === 'CPT_Widget_Pop') return;
-
-    // ============================================
-    // DEBUG — set to false once diagnosis is complete
-    // ============================================
-    var DEBUG = true;
 
     // CONFIG
     var URL = 'https://trans-logistics.amazon.com/ssp/dock/hrz/cpt',
@@ -36,7 +32,8 @@
         PG_WAIT = 800,
         TIMEOUT = 15000,
         DATA_REFRESH = 60000,
-        SNAP_M = 10;
+        SNAP_M = 10,
+        STALE_THRESHOLD = 60000; // data older than 60s = stale
 
     var RH = /(\d+)\s*hr/, RM = /(\d+)\s*min/, RN = /(\d+)/;
     var B = '';
@@ -158,7 +155,8 @@
     // ============================================
     // MODE 2: WIDGET
     // ============================================
-    var popWin = null, popI = null, fMode = 'fetch', fFail = 0;
+    var popWin = null, popI = null, fMode = 'tab', fFail = 0;
+    var autoTabOpened = false;
 
     GM_addStyle('#cpt-w{position:fixed;width:420px;max-height:500px;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:999999;overflow:hidden;transform:scale('+SCALE+');transform-origin:bottom right;display:flex;flex-direction:column}#cpt-w.min{max-height:none;height:auto}#cpt-w.min .cb{display:none}#cpt-w.min .mv{display:flex}.mv{display:none}.cw{font:13px "Segoe UI",sans-serif;color:#000;background:#FFADDB;display:flex;flex-direction:column;height:100%}.ch{background:#D39ADB;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;cursor:grab;user-select:none;flex-shrink:0}.ch h3{margin:0;font-size:14px;color:#FFF}.cs{font-size:11px;color:#FFF}.cb{padding:10px 15px;overflow-y:auto;flex:1;min-height:0}.sec{margin-bottom:12px}.st{font-size:12px;font-weight:bold;text-transform:lowercase;margin-bottom:6px;border-bottom:1px solid #FFF;padding-bottom:4px}.cw table{width:100%;border-collapse:collapse;font-size:12px}.cw th{text-align:left;padding:4px 6px;background:#C99DC7;color:#FFF;font-weight:normal;font-size:11px}.cw td{padding:4px 6px;border-bottom:1px solid #D9D9FF}.cw tr:hover{background:#D9D9FF}.sm{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}.si{background:#FFF;padding:6px 12px;border-radius:6px;text-align:center}.si .n{font-size:18px;font-weight:bold;display:block}.si .lb{font-size:10px;color:#888;text-transform:lowercase}.bt{background:none;border:none;color:#FFF;font-size:16px;cursor:pointer;padding:0 5px}.bt:hover{color:#000}.ss{color:#f39c12;font-weight:bold}.sl{color:#3498db;font-weight:bold}.sd{color:#27ae60;font-weight:bold}.sr{color:#e74c3c;font-weight:bold}.sc{color:#9b59b6;font-weight:bold}.pl{display:inline-block;width:8px;height:8px;border-radius:50%;background:#27ae60;margin-right:6px;animation:p 2s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}.wn{background:#fff3cd;color:#856404;padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;text-align:center}.mv{gap:12px;align-items:center;flex-wrap:wrap;padding:8px 15px;font-size:12px}.mi{display:flex;align-items:center;gap:4px}.mi .mn{font-weight:bold;font-size:14px}.mi .ml{font-size:11px;color:#555;text-transform:lowercase}.mu{font-size:10px;color:#555;margin-left:auto}.src{font-size:9px;color:#888;text-align:center;margin-top:6px}.al{background:#e74c3c;color:#FFF;padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:11px;animation:f 1s infinite}.ali{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.2)}.ali:last-child{border-bottom:none}.alt{font-weight:bold;font-size:12px;margin-bottom:4px}.aln{font-weight:bold}.ald{font-size:10px;opacity:.9}@keyframes f{0%,100%{opacity:1}50%{opacity:.85}}.mal{background:#e74c3c;color:#FFF;padding:4px 8px;border-radius:4px;font-size:10px;margin-top:4px;animation:f 1s infinite}.snp{transition:top .25s,left .25s,right .25s,bottom .25s}');
 
@@ -215,11 +213,66 @@
     GM_addValueChangeListener('cpt_widget_minimized',function(n,o,v,r){if(r) aMin(v);});
     GM_addValueChangeListener('cpt_widget_data',function(n,o,v,r){if(r) upd();});
     GM_addValueChangeListener('cpt_widget_popped',function(n,o,v,r){if(r){var w=document.getElementById('cpt-w');if(w) w.style.display=v?'none':'';}});
-    GM_addValueChangeListener('cpt_view_open',function(n,o,v){if(v){cWarn();fMode='fetch';fFail=0;}});
+    GM_addValueChangeListener('cpt_view_open',function(n,o,v){if(v) cWarn();});
 
     function cWarn() {
         var e = document.getElementById('ww'); if (e && e.innerHTML) e.innerHTML='';
         if (popWin&&!popWin.closed){var p=popWin.document.getElementById('ww');if(p&&p.innerHTML) p.innerHTML='';}
+    }
+
+    // ============================================
+    // AUTO-OPEN CPT VIEW IN BACKGROUND
+    // ============================================
+    function isDataStale() {
+        var raw = GM_getValue('cpt_widget_data', null);
+        if (!raw) return true;
+        try {
+            var data = JSON.parse(raw);
+            return (Date.now() - data.ts) > STALE_THRESHOLD;
+        } catch(e) { return true; }
+    }
+
+    function isCptViewAlive() {
+        return GM_getValue('cpt_view_open', false);
+    }
+
+    function autoOpenCptView() {
+        // Don't open if CPT View is already open or we already auto-opened
+        if (isCptViewAlive() || autoTabOpened) return;
+
+        // Don't open if data is fresh enough
+        if (!isDataStale()) return;
+
+        autoTabOpened = true;
+        // Open in background (inactive) tab
+        GM_openInTab(URL, { active: false, insert: true, setParent: true });
+
+        // Show brief notification
+        var w = document.getElementById('ww');
+        if (w) w.innerHTML = '<div class="wn">\u2139\uFE0F auto-opened CPT View in background tab for live data</div>';
+        if (popWin && !popWin.closed) {
+            var p = popWin.document.getElementById('ww');
+            if (p) p.innerHTML = '<div class="wn">\u2139\uFE0F auto-opened CPT View in background tab for live data</div>';
+        }
+
+        // Clear the notification once data starts flowing
+        var clearCheck = setInterval(function() {
+            if (!isDataStale()) {
+                clearInterval(clearCheck);
+                cWarn();
+            }
+        }, 5000);
+    }
+
+    // Periodically check if we need to re-open CPT View
+    function monitorDataFreshness() {
+        setInterval(function() {
+            if (!isCptViewAlive() && isDataStale()) {
+                // Reset flag so we can re-open if needed
+                autoTabOpened = false;
+                autoOpenCptView();
+            }
+        }, 30000); // Check every 30 seconds
     }
 
     // Create
@@ -274,71 +327,6 @@
         upd();
     }
 
-    // ============================================
-    // FETCH + DEBUG
-    // ============================================
-    function fetch2() {
-        GM_xmlhttpRequest({method:'GET',url:URL,timeout:TIMEOUT,headers:{'Accept':'text/html','Cache-Control':'no-cache'},
-            onload:function(r){
-                // ===== DEBUG OUTPUT =====
-                if (DEBUG) {
-                    var t = r.responseText;
-                    var tbodyIdx = t.indexOf('<tbody');
-                    var tbodyEndIdx = t.indexOf('</tbody>', tbodyIdx);
-                    var tbodyChunk = tbodyIdx !== -1 ? t.substring(tbodyIdx, Math.min(tbodyIdx + 1000, tbodyEndIdx !== -1 ? tbodyEndIdx + 8 : tbodyIdx + 1000)) : 'NO TBODY FOUND';
-                    console.log('[CPT DEBUG] ===== FETCH RESPONSE =====');
-                    console.log('[CPT DEBUG] Status:', r.status);
-                    console.log('[CPT DEBUG] Response length:', t.length, 'chars');
-                    console.log('[CPT DEBUG] Has cptsLoadInProgress:', t.indexOf('cptsLoadInProgress') !== -1);
-                    console.log('[CPT DEBUG] <tr> count:', (t.match(/<tr/g) || []).length);
-                    console.log('[CPT DEBUG] Has laneName spans:', t.indexOf('laneName') !== -1);
-                    console.log('[CPT DEBUG] Has dataTable init:', t.indexOf('dataTable(') !== -1 || t.indexOf('DataTable(') !== -1);
-                    console.log('[CPT DEBUG] Has "ajax":', t.indexOf('ajax') !== -1);
-                    console.log('[CPT DEBUG] Has "sAjaxSource":', t.indexOf('sAjaxSource') !== -1);
-                    console.log('[CPT DEBUG] Tbody sample:', tbodyChunk);
-                    console.log('[CPT DEBUG] ===== END DEBUG =====');
-                }
-                // ===== END DEBUG =====
-
-                if(r.status===200){var d=pHTML(r.responseText);if(d&&d.a.length){fMode='fetch';fFail=0;cWarn();GM_setValue('cpt_widget_data',JSON.stringify(d));if(DEBUG) console.log('[CPT DEBUG] Parse SUCCESS - found', d.a.length, 'CPTs');}else{if(DEBUG) console.log('[CPT DEBUG] Parse FAILED - pHTML returned null or empty');onFail();}}
-                else if(r.status===401||r.status===403){if(DEBUG) console.log('[CPT DEBUG] AUTH ERROR - status', r.status);onFail(1);}
-                else{if(DEBUG) console.log('[CPT DEBUG] HTTP ERROR - status', r.status);onFail();}
-            },
-            onerror:function(e){if(DEBUG) console.log('[CPT DEBUG] NETWORK ERROR:', e);onFail();},
-            ontimeout:function(){if(DEBUG) console.log('[CPT DEBUG] TIMEOUT after', TIMEOUT, 'ms');onFail();}
-        });
-    }
-
-    function pHTML(h) {
-        try {
-            var i=h.indexOf('id="cptsLoadInProgress"');
-            if(i===-1){if(DEBUG) console.log('[CPT DEBUG] pHTML: table ID not found');return null;}
-            var s=h.lastIndexOf('<table',i),e=h.indexOf('</table>',i);
-            if(s===-1||e===-1){if(DEBUG) console.log('[CPT DEBUG] pHTML: table tags not found');return null;}
-            var tmp=document.createElement('div');tmp.innerHTML=h.substring(s,e+8);
-            var tbl=tmp.firstElementChild;
-            if(!tbl||!tbl.tBodies[0]){if(DEBUG) console.log('[CPT DEBUG] pHTML: no tbody in parsed table');tmp.innerHTML='';return null;}
-            var rows=tbl.tBodies[0].rows;
-            if(DEBUG) console.log('[CPT DEBUG] pHTML: found', rows.length, 'rows, first row cells:', rows[0] ? rows[0].cells.length : 0);
-            if(!rows.length){if(DEBUG) console.log('[CPT DEBUG] pHTML: zero rows');tmp.innerHTML='';return null;}
-            if(rows.length===1&&rows[0].cells&&rows[0].cells.length<22){
-                if(DEBUG) console.log('[CPT DEBUG] pHTML: single row with', rows[0].cells.length, 'cells (need 22+), content:', rows[0].textContent.substring(0,100));
-                tmp.innerHTML='';return null;
-            }
-            var res=parse(rows);tmp.innerHTML='';tmp=null;return res;
-        }catch(ex){if(DEBUG) console.log('[CPT DEBUG] pHTML: EXCEPTION:', ex.message);return null;}
-    }
-
-    function onFail(auth) {
-        fFail++;
-        if(fFail>=3&&!GM_getValue('cpt_view_open',false)){
-            fMode='tab';
-            var msg=auth?'\u26A0\uFE0F session expired \u2014 <a href="'+URL+'" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a>':'\u26A0\uFE0F direct fetch unavailable \u2014 <a href="'+URL+'" target="_blank" style="color:#856404;font-weight:bold">open CPT View</a> in any tab';
-            var w=document.getElementById('ww');if(w) w.innerHTML='<div class="wn">'+msg+'</div>';
-            if(popWin&&!popWin.closed){var p=popWin.document.getElementById('ww');if(p) p.innerHTML='<div class="wn">'+msg+'</div>';}
-        }
-    }
-
     // Alerts
     function gAlerts(staged) {
         var a=[],i=staged.length;
@@ -367,7 +355,7 @@
         }
 
         var wn=d.getElementById('ww');
-        if(wn&&fMode==='fetch'){var age=(Date.now()-tst)/60000|0;if(age>2) wn.innerHTML='<div class="wn">\u26A0\uFE0F data is '+age+' min old</div>';else if(wn.innerHTML) wn.innerHTML='';}
+        if(wn){var age=(Date.now()-tst)/60000|0;if(age>2) wn.innerHTML='<div class="wn">\u26A0\uFE0F data is '+age+' min old</div>';else if(wn.innerHTML && wn.innerHTML.indexOf('min old')!==-1) wn.innerHTML='';}
 
         var now=new Date(),ts2=now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
@@ -390,13 +378,13 @@
         }
 
         var st=d.getElementById('cst');if(st) st.innerHTML='<span class="pl"></span>'+ts2;
-        var src=d.getElementById('src');if(src) src.textContent=fMode==='fetch'?'source: direct fetch':'source: cpt view tab';
+        var src=d.getElementById('src');if(src) src.textContent='source: cpt view tab';
     }
 
     // Update
     function upd() {
         var raw=GM_getValue('cpt_widget_data',null);
-        if(!raw){var st=document.getElementById('cst');if(st) st.innerHTML='<span style="color:#f39c12">\u25CF fetching...</span>';return;}
+        if(!raw){var st=document.getElementById('cst');if(st) st.innerHTML='<span style="color:#f39c12">\u25CF opening CPT View...</span>';return;}
         var data;try{data=JSON.parse(raw);}catch(e){return;}
 
         rend(document);
@@ -419,7 +407,20 @@
     }
 
     // Init
-    function init(){create();upd();fetch2();setInterval(function(){if(fMode==='fetch') fetch2();},SCRAPE);setInterval(upd,REFRESH);}
+    function init(){
+        create();
+        upd();
+
+        // Auto-open CPT View if no fresh data
+        autoOpenCptView();
+
+        // Monitor and re-open if CPT View dies
+        monitorDataFreshness();
+
+        // Regular update cycle
+        setInterval(upd, REFRESH);
+    }
+
     if(document.readyState==='complete') init(); else window.addEventListener('load',init);
 })();
 
