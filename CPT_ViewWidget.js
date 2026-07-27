@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      4.7.2
-// @description  Memory-optimized CPT widget — pop-out heartbeat fix
+// @version      4.7.3
+// @description  Memory-optimized CPT widget — debug mode to diagnose fetch issues
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
 // @downloadURL  https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -20,6 +20,11 @@
     'use strict';
 
     if (window.name === 'CPT_Widget_Pop') return;
+
+    // ============================================
+    // DEBUG — set to false once diagnosis is complete
+    // ============================================
+    var DEBUG = true;
 
     // CONFIG
     var URL = 'https://trans-logistics.amazon.com/ssp/dock/hrz/cpt',
@@ -76,19 +81,15 @@
         return {s:st,g:ld,d:dd,a:all,ts:Date.now()};
     }
 
-    // ============================================
-    // ORPHAN DETECTION — reset stuck pop-out flag
-    // ============================================
+    // Orphan detection
     function checkOrphanedPopOut() {
         if (GM_getValue('cpt_widget_popped', false)) {
             var lastBeat = GM_getValue('cpt_widget_pop_heartbeat', 0);
-            // If heartbeat is older than 5 seconds, pop-out is dead
             if (Date.now() - lastBeat > 5000) {
                 GM_setValue('cpt_widget_popped', false);
             }
         }
     }
-    // Run immediately on script load
     checkOrphanedPopOut();
 
     // ============================================
@@ -227,8 +228,6 @@
         w.id='cpt-w'; w.className='cw'; w.innerHTML=IHTML;
         document.body.appendChild(w);
         aPos(w); aZoom(); aMin(GM_getValue('cpt_widget_minimized',false)); initDrag(w);
-
-        // Check popped state — already validated by checkOrphanedPopOut() above
         if (GM_getValue('cpt_widget_popped',false)) w.style.display='none';
 
         w.querySelector('#bm').onclick=function(e){e.stopPropagation();var m=!w.classList.contains('min');aMin(m);GM_setValue('cpt_widget_minimized',m);};
@@ -254,19 +253,12 @@
         GM_setValue('cpt_widget_pop_heartbeat', Date.now());
         var iw=document.getElementById('cpt-w');if(iw) iw.style.display='none';
 
-        // Monitor pop-out — write heartbeat so other tabs know it's alive
         var chk=setInterval(function(){
             if(!popWin||popWin.closed){
-                clearInterval(chk);
-                if(popI){clearInterval(popI);popI=null;}
-                popWin=null;
-                GM_setValue('cpt_widget_popped',false);
-                GM_setValue('cpt_widget_pop_heartbeat', 0);
+                clearInterval(chk);if(popI){clearInterval(popI);popI=null;}popWin=null;
+                GM_setValue('cpt_widget_popped',false);GM_setValue('cpt_widget_pop_heartbeat',0);
                 var w2=document.getElementById('cpt-w');if(w2) w2.style.display='';
-            } else {
-                // Pop-out still alive — update heartbeat
-                GM_setValue('cpt_widget_pop_heartbeat', Date.now());
-            }
+            } else { GM_setValue('cpt_widget_pop_heartbeat', Date.now()); }
         },2000);
 
         rend(popWin.document);
@@ -277,30 +269,64 @@
         if(popI){clearInterval(popI);popI=null;}
         if(popWin&&!popWin.closed) popWin.close();
         popWin=null;
-        GM_setValue('cpt_widget_popped',false);
-        GM_setValue('cpt_widget_pop_heartbeat', 0);
+        GM_setValue('cpt_widget_popped',false);GM_setValue('cpt_widget_pop_heartbeat',0);
         var w=document.getElementById('cpt-w');if(w) w.style.display='';
         upd();
     }
 
-    // Fetch
+    // ============================================
+    // FETCH + DEBUG
+    // ============================================
     function fetch2() {
         GM_xmlhttpRequest({method:'GET',url:URL,timeout:TIMEOUT,headers:{'Accept':'text/html','Cache-Control':'no-cache'},
             onload:function(r){
-                if(r.status===200){var d=pHTML(r.responseText);if(d&&d.a.length){fMode='fetch';fFail=0;cWarn();GM_setValue('cpt_widget_data',JSON.stringify(d));}else onFail();}
-                else if(r.status===401||r.status===403) onFail(1); else onFail();
-            },onerror:onFail,ontimeout:onFail});
+                // ===== DEBUG OUTPUT =====
+                if (DEBUG) {
+                    var t = r.responseText;
+                    var tbodyIdx = t.indexOf('<tbody');
+                    var tbodyEndIdx = t.indexOf('</tbody>', tbodyIdx);
+                    var tbodyChunk = tbodyIdx !== -1 ? t.substring(tbodyIdx, Math.min(tbodyIdx + 1000, tbodyEndIdx !== -1 ? tbodyEndIdx + 8 : tbodyIdx + 1000)) : 'NO TBODY FOUND';
+                    console.log('[CPT DEBUG] ===== FETCH RESPONSE =====');
+                    console.log('[CPT DEBUG] Status:', r.status);
+                    console.log('[CPT DEBUG] Response length:', t.length, 'chars');
+                    console.log('[CPT DEBUG] Has cptsLoadInProgress:', t.indexOf('cptsLoadInProgress') !== -1);
+                    console.log('[CPT DEBUG] <tr> count:', (t.match(/<tr/g) || []).length);
+                    console.log('[CPT DEBUG] Has laneName spans:', t.indexOf('laneName') !== -1);
+                    console.log('[CPT DEBUG] Has dataTable init:', t.indexOf('dataTable(') !== -1 || t.indexOf('DataTable(') !== -1);
+                    console.log('[CPT DEBUG] Has "ajax":', t.indexOf('ajax') !== -1);
+                    console.log('[CPT DEBUG] Has "sAjaxSource":', t.indexOf('sAjaxSource') !== -1);
+                    console.log('[CPT DEBUG] Tbody sample:', tbodyChunk);
+                    console.log('[CPT DEBUG] ===== END DEBUG =====');
+                }
+                // ===== END DEBUG =====
+
+                if(r.status===200){var d=pHTML(r.responseText);if(d&&d.a.length){fMode='fetch';fFail=0;cWarn();GM_setValue('cpt_widget_data',JSON.stringify(d));if(DEBUG) console.log('[CPT DEBUG] Parse SUCCESS - found', d.a.length, 'CPTs');}else{if(DEBUG) console.log('[CPT DEBUG] Parse FAILED - pHTML returned null or empty');onFail();}}
+                else if(r.status===401||r.status===403){if(DEBUG) console.log('[CPT DEBUG] AUTH ERROR - status', r.status);onFail(1);}
+                else{if(DEBUG) console.log('[CPT DEBUG] HTTP ERROR - status', r.status);onFail();}
+            },
+            onerror:function(e){if(DEBUG) console.log('[CPT DEBUG] NETWORK ERROR:', e);onFail();},
+            ontimeout:function(){if(DEBUG) console.log('[CPT DEBUG] TIMEOUT after', TIMEOUT, 'ms');onFail();}
+        });
     }
 
     function pHTML(h) {
         try {
-            var i=h.indexOf('id="cptsLoadInProgress"');if(i===-1)return null;
-            var s=h.lastIndexOf('<table',i),e=h.indexOf('</table>',i);if(s===-1||e===-1)return null;
+            var i=h.indexOf('id="cptsLoadInProgress"');
+            if(i===-1){if(DEBUG) console.log('[CPT DEBUG] pHTML: table ID not found');return null;}
+            var s=h.lastIndexOf('<table',i),e=h.indexOf('</table>',i);
+            if(s===-1||e===-1){if(DEBUG) console.log('[CPT DEBUG] pHTML: table tags not found');return null;}
             var tmp=document.createElement('div');tmp.innerHTML=h.substring(s,e+8);
-            var tbl=tmp.firstElementChild;if(!tbl||!tbl.tBodies[0])return null;
-            var rows=tbl.tBodies[0].rows;if(!rows.length||(rows.length===1&&rows[0].cells&&rows[0].cells.length<22))return null;
+            var tbl=tmp.firstElementChild;
+            if(!tbl||!tbl.tBodies[0]){if(DEBUG) console.log('[CPT DEBUG] pHTML: no tbody in parsed table');tmp.innerHTML='';return null;}
+            var rows=tbl.tBodies[0].rows;
+            if(DEBUG) console.log('[CPT DEBUG] pHTML: found', rows.length, 'rows, first row cells:', rows[0] ? rows[0].cells.length : 0);
+            if(!rows.length){if(DEBUG) console.log('[CPT DEBUG] pHTML: zero rows');tmp.innerHTML='';return null;}
+            if(rows.length===1&&rows[0].cells&&rows[0].cells.length<22){
+                if(DEBUG) console.log('[CPT DEBUG] pHTML: single row with', rows[0].cells.length, 'cells (need 22+), content:', rows[0].textContent.substring(0,100));
+                tmp.innerHTML='';return null;
+            }
             var res=parse(rows);tmp.innerHTML='';tmp=null;return res;
-        }catch(e){return null;}
+        }catch(ex){if(DEBUG) console.log('[CPT DEBUG] pHTML: EXCEPTION:', ex.message);return null;}
     }
 
     function onFail(auth) {
