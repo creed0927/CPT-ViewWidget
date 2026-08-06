@@ -736,9 +736,24 @@
 
         // Pause when tab is hidden to save resources
         document.addEventListener('visibilitychange', function () {
-            if (document.hidden) stopScraping();
-            else { scrape(); startScraping(); }
-        });
+    // Always stop the current timers
+    stopScraping();
+
+    if (document.hidden) {
+        // Background: scrape at a slower rate (every 30s) but DON'T stop
+        scrapeTimer = setInterval(scrape, 30000);
+        // Still refresh the page data, just less often (every 2 min)
+        refreshTimer = setInterval(function () {
+            refreshCPTView();
+            setTimeout(scrape, 5000);
+        }, 120000);
+    } else {
+        // Foreground: immediate scrape + normal speed
+        scrape();
+        startScraping();
+    }
+});
+
 
         // Wait for table to be ready, then start
         (function waitForTable() {
