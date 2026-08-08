@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         CPT View Live Widget - OB Dock
 // @namespace    http://tampermonkey.net/
-// @version      5.6.6
+// @version      5.6.7
 // @description  Live CPT widget with local upload staging map
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/creed0927/CPT-ViewWidget/refs/heads/main/CPT_ViewWidget.js
@@ -718,6 +718,8 @@
         function finishScrape(rows) {
             var data = parseTableRows(rows);
             GM_setValue('cpt_widget_data', JSON.stringify(data));
+            // Heartbeat: lets widget tabs know CPT View is alive via timestamp
+            GM_setValue('cpt_view_heartbeat', Date.now());
 
             // Update badge
             var timeEl = document.getElementById('sbt');
@@ -1507,19 +1509,23 @@
     function isDataStale() {
         var raw = GM_getValue('cpt_widget_data', null);
         if (!raw) return true;
-        try { return (Date.now() - JSON.parse(raw).ts) > 60000; }
+        try { return (Date.now() - JSON.parse(raw).ts) > 180000; } // 3 min
         catch (e) { return true; }
     }
 
     function isCPTViewAlive() {
-        return GM_getValue('cpt_view_open', false);
+        // Use heartbeat timestamp written by the scraper on every successful scrape.
+        // Consider it alive if a heartbeat arrived within the last 90 seconds
+        // (scrape rate is 15s, so 6 missed scrapes before we consider it dead).
+        var hb = GM_getValue('cpt_view_heartbeat', 0);
+        return (Date.now() - hb) < 90000;
     }
 
     function autoOpenCPTView() {
         if (isCPTViewAlive() || !isDataStale() || GM_getValue('cpt_auto_opened', false)) return;
 
         var lastAttempt = GM_getValue('cpt_aol', 0);
-        if (Date.now() - lastAttempt < 120000) return; // Don't retry within 2 min
+        if (Date.now() - lastAttempt < 300000) return; // Don't retry within 5 min
 
         GM_setValue('cpt_aol', Date.now());
         GM_setValue('cpt_auto_opened', true);
@@ -1533,7 +1539,22 @@
     function startUpdateLoop() {
         if (updateTimer) return;
         updateTimer = setInterval(updateWidget, S.refreshRate);
+
+        // Only one widget tab should run the monitor to avoid races.
+        // Claim the lock if unclaimed or stale (>60s without renewal).
+        var myId = Date.now() + Math.random();
+        function claimMonitor() {
+            var lock = GM_getValue('cpt_monitor_lock', null);
+            if (!lock || (Date.now() - lock.ts) > 60000) {
+                GM_setValue('cpt_monitor_lock', { id: myId, ts: Date.now() });
+                return true;
+            }
+            return lock.id === myId;
+        }
+
         monitorTimer = setInterval(function () {
+            if (!claimMonitor()) return; // Another tab holds the lock
+            GM_setValue('cpt_monitor_lock', { id: myId, ts: Date.now() }); // Renew
             if (!isCPTViewAlive() && isDataStale()) autoOpenCPTView();
         }, 30000);
     }
