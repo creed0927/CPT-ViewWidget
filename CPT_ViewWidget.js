@@ -130,6 +130,21 @@
     }
 
     /**
+     * Linehaul filter — returns false for sorts starting with 'k' (case-insensitive)
+     */
+    function isLinehaul(lane) {
+        return String(lane).toLowerCase().charCodeAt(0) !== 107; // 107 = 'k'
+    }
+
+    function getLHOnly() {
+        return GM_getValue('cpt_lh_only', false);
+    }
+
+    function setLHOnly(val) {
+        GM_setValue('cpt_lh_only', val);
+    }
+
+    /**
      * Extract count from a table cell (handles <a> links and plain text)
      */
     function extractCount(cell) {
@@ -997,7 +1012,11 @@
             '.ahm{font-size:10px;background:' + (dk ? '#16213e' : '#f5f5f5') + ';padding:6px;border-radius:4px;' +
             'margin:4px 0;font-family:monospace;word-wrap:break-word;color:' + (dk ? '#cdd6f4' : '#333') + '}' +
             '.ahc{background:' + T.hd + ';color:' + T.ac + ';border:none;padding:4px 10px;border-radius:4px;' +
-            'font-size:10px;cursor:pointer;font-weight:bold}';
+            'font-size:10px;cursor:pointer;font-weight:bold}' +
+            // Linehaul toggle button
+            '.lhb{background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.6);color:' + T.ac +
+            ';font-size:10px;cursor:pointer;padding:2px 8px;border-radius:10px;line-height:1.5;font-weight:bold}' +
+            '.lhb.on{background:' + T.ac + ';color:' + T.hd + '}';
 
         return css;
     }
@@ -1072,7 +1091,8 @@
 
     var WIDGET_HTML = '<div class="ch" id="ch">' +
         '<h3>outbound dock :3 - live</h3>' +
-        '<div>' +
+        '<div style="display:flex;align-items:center;gap:5px">' +
+        '<button class="lhb" id="blh" title="toggle linehaul only">LH</button>' +
         '<span class="cs" id="cst">starting...</span>' +
         '<button class="bt" id="bset" title="settings">\u2699</button>' +
         '<button class="bt" id="bp" title="pop out">\u29C9</button>' +
@@ -1447,6 +1467,20 @@
         if (remote) applyMinimize(newVal);
     });
 
+    // Sync LH toggle state across tabs
+    GM_addValueChangeListener('cpt_lh_only', function (name, oldVal, newVal, remote) {
+        if (!remote) return;
+        // Update button appearance in inline widget
+        var btn = document.getElementById('blh');
+        if (btn) btn.className = newVal ? 'lhb on' : 'lhb';
+        // Update button appearance in pop-out if open
+        if (popWin && !popWin.closed) {
+            var pbtn = popWin.document.getElementById('blh');
+            if (pbtn) pbtn.className = newVal ? 'lhb on' : 'lhb';
+        }
+        updateWidget();
+    });
+
     // Sync data updates across tabs
     GM_addValueChangeListener('cpt_widget_data', function (name, oldVal, newVal, remote) {
         if (remote && isVisible) updateWidget();
@@ -1534,6 +1568,25 @@
         var loading = data.g;
         var all = data.a;
         var timestamp = data.ts;
+
+        // Apply linehaul-only filter (exclude lanes starting with 'k')
+        var lhOnly = getLHOnly();
+        if (lhOnly) {
+            staged  = staged.filter(function(r) { return isLinehaul(r.l); });
+            loading = loading.filter(function(r) { return isLinehaul(r.l); });
+            all     = all.filter(function(r)     { return isLinehaul(r.l); });
+            data = {
+                s: staged,
+                g: loading,
+                d: data.d.filter(function(r) { return isLinehaul(r.l); }),
+                a: all,
+                ts: data.ts
+            };
+        }
+
+        // Sync button active state in this document
+        var lhBtn = doc.getElementById('blh');
+        if (lhBtn) lhBtn.className = lhOnly ? 'lhb on' : 'lhb';
 
         // Count late CPTs
         var lateCount = 0;
@@ -1668,12 +1721,17 @@
 
         var msEl = document.getElementById('ms');
         if (msEl) {
+            var lhOnly2 = getLHOnly();
+            var sd = lhOnly2 ? data.s.filter(function(r){return isLinehaul(r.l);}) : data.s;
+            var gd = lhOnly2 ? data.g.filter(function(r){return isLinehaul(r.l);}) : data.g;
+            var dd = lhOnly2 ? data.d.filter(function(r){return isLinehaul(r.l);}) : data.d;
+            var ad = lhOnly2 ? data.a.filter(function(r){return isLinehaul(r.l);}) : data.a;
             var lateCount = 0;
-            var i = data.a.length;
-            while (i--) { if (isLate(data.a[i].t)) lateCount++; }
-            msEl.textContent = data.s.length;
-            document.getElementById('ml').textContent = data.g.length;
-            document.getElementById('md').textContent = data.d.length;
+            var i = ad.length;
+            while (i--) { if (isLate(ad[i].t)) lateCount++; }
+            msEl.textContent = sd.length;
+            document.getElementById('ml').textContent = gd.length;
+            document.getElementById('md').textContent = dd.length;
             document.getElementById('mt').textContent = lateCount;
         }
 
@@ -1685,7 +1743,7 @@
         }
 
         // Minimized alert badges
-        var alerts = getAlerts(data.s);
+        var alerts = getAlerts(lhOnly2 ? sd : data.s);
         var maEl = document.getElementById('ma');
         if (maEl) {
             if (!alerts.length) {
@@ -1734,7 +1792,8 @@
             makeWidgetCSS(true) +
             '</style></head><body><div class="cw"><div class="ch">' +
             '<h3>outbound dock :3 - live</h3>' +
-            '<div><span class="cs" id="cst">...</span>' +
+            '<div style="display:flex;align-items:center;gap:5px"><button class="lhb" id="blh" title="toggle linehaul only">LH</button>' +
+            '<span class="cs" id="cst">...</span>' +
             '<button class="bt" id="dk">\u29C9</button></div>' +
             '</div><div class="cb" id="cb">' + TABLE_HTML + '</div></div></body></html>'
         );
@@ -1742,6 +1801,14 @@
 
         // Dock button in pop-out
         popWin.document.getElementById('dk').onclick = dockWidget;
+
+        // Linehaul toggle in pop-out
+        popWin.document.getElementById('blh').onclick = function () {
+            var next = !getLHOnly();
+            setLHOnly(next);
+            this.className = next ? 'lhb on' : 'lhb';
+            render(popWin.document);
+        };
 
         // Update state
         GM_setValue('cpt_widget_popped', true);
@@ -1870,6 +1937,15 @@
         widget.querySelector('#bx').onclick = function (e) {
             e.stopPropagation();
             closeWidget();
+        };
+
+        // Linehaul toggle button
+        widget.querySelector('#blh').onclick = function (e) {
+            e.stopPropagation();
+            var next = !getLHOnly();
+            setLHOnly(next);
+            this.className = next ? 'lhb on' : 'lhb';
+            updateWidget();
         };
 
         // Settings button
